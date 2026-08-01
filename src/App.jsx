@@ -73,6 +73,7 @@ function BizFileBox({ file, inputRef, onChange, disabled }) {
 }
 
 export default function App() {
+  const [scope, setScope]     = useState("screen"); // "screen" | "module"
   const [mode, setMode]       = useState("fetch");
   const [moduleName, setModuleName] = useState("Finance");
   const [screen, setScreen]   = useState("Instrument master");
@@ -82,7 +83,6 @@ export default function App() {
 
   const [phase, setPhase]   = useState("idle");
   const [result, setResult] = useState(null);
-  const [interruptText, setInterruptText] = useState("");
   const [lines, setLines]   = useState([]);
   const [connected, setConnected] = useState(false);
   const [logMaximized, setLogMaximized] = useState(false);
@@ -153,17 +153,17 @@ export default function App() {
   };
 
   const handleFetch = () => {
-    if (!moduleName.trim() || !screen.trim()) {
-      setAlert({ message: "Enter both module and screen name.", tone: "danger" });
+    if (!moduleName.trim() || (scope === "screen" && !screen.trim())) {
+      setAlert({ message: scope === "screen" ? "Enter both module and screen name." : "Enter a module name.", tone: "danger" });
       return;
     }
     resetRun();
-    send({ action: "fetch", module: moduleName.trim(), screen: screen.trim() });
+    send({ action: "fetch", module: moduleName.trim(), screen: scope === "screen" ? screen.trim() : undefined, scope });
   };
 
   const handleGenerate = async () => {
-    if (!moduleName.trim() || !screen.trim()) {
-      setAlert({ message: "Enter both module and screen name.", tone: "danger" });
+    if (!moduleName.trim() || (scope === "screen" && !screen.trim())) {
+      setAlert({ message: scope === "screen" ? "Enter both module and screen name." : "Enter a module name.", tone: "danger" });
       return;
     }
     if (!sourceFile) {
@@ -182,7 +182,8 @@ export default function App() {
       send({
         action: "generate",
         module: moduleName.trim(),
-        screen: screen.trim(),
+        screen: scope === "screen" ? screen.trim() : undefined,
+        scope,
         request: userRequest,
         source_zip_base64,
         business_context_base64,
@@ -195,16 +196,9 @@ export default function App() {
   const handleApprove  = () => send({ action: "approve" });
   const handleReject   = () => { resetRun(); send({ action: "reject" }); };
   const handleRun      = () => { setLines([]); setResult(null); send({ action: "run" }); };
-  const handleInterrupt = () => {
-    const note = interruptText.trim();
-    if (!note) return;
-    setInterruptText("");
-    send({ action: "interrupt", note });
-  };
 
   const phaseInfo    = PHASE_LABELS[phase] || null;
   const hasArtifacts = !!(artifacts?.feature_file && artifacts?.script);
-  const canInterrupt = hasArtifacts && (phase === "awaiting_review" || phase === "awaiting_approval");
   const canRun       = hasArtifacts && phase === "awaiting_review";
   const canApprove   = hasArtifacts && phase === "awaiting_approval";
   const showLog      = lines.length > 0 || phase === "running" || phase === "done";
@@ -231,20 +225,37 @@ export default function App() {
       {/* LEFT PANEL */}
       <aside className="left-panel">
 
+        {/* Scope */}
+        <div>
+          <p className="card-title">Scope</p>
+          <div className="tabs scope-tabs">
+            <button className={`tab-btn${scope === "screen" ? " active" : ""}`}
+              onClick={() => setScope("screen")} disabled={busy}>
+              Single screen
+            </button>
+            <button className={`tab-btn${scope === "module" ? " active" : ""}`}
+              onClick={() => setScope("module")} disabled={busy}>
+              Whole module
+            </button>
+          </div>
+        </div>
+
         {/* Module / Screen */}
         <div>
-          <p className="card-title">Screen</p>
+          <p className="card-title">{scope === "module" ? "Module" : "Screen"}</p>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <div>
               <label className="field-label">Module</label>
               <input type="text" placeholder="e.g. Finance" value={moduleName}
                 onChange={(e) => setModuleName(e.target.value)} disabled={busy} />
             </div>
-            <div>
-              <label className="field-label">Screen</label>
-              <input type="text" placeholder="e.g. Instrument master" value={screen}
-                onChange={(e) => setScreen(e.target.value)} disabled={busy} />
-            </div>
+            {scope === "screen" && (
+              <div>
+                <label className="field-label">Screen</label>
+                <input type="text" placeholder="e.g. Instrument master" value={screen}
+                  onChange={(e) => setScreen(e.target.value)} disabled={busy} />
+              </div>
+            )}
           </div>
         </div>
 
@@ -353,30 +364,27 @@ export default function App() {
               </div>
             )}
 
-            <details className="disclosure">
-              <summary>📄 Feature file</summary>
-              <pre>{artifacts.feature_file}</pre>
-            </details>
+            <div className="side-by-side">
+              <div className="sxs-panel">
+                <div className="sxs-panel-header">
+                  <span className="sxs-icon">📄</span>
+                  <span>Feature file</span>
+                </div>
+                <pre>{artifacts.feature_file}</pre>
+              </div>
+              <div className="sxs-panel">
+                <div className="sxs-panel-header">
+                  <span className="sxs-icon">{"</>"}</span>
+                  <span>Cypress script</span>
+                </div>
+                <pre>{artifacts.script}</pre>
+              </div>
+            </div>
 
-            <details className="disclosure">
-              <summary>&lt;/&gt; Cypress script</summary>
-              <pre>{artifacts.script}</pre>
-            </details>
 
 
-
-            {(canInterrupt || canApprove || canRun) && (
+            {(canApprove || canRun) && (
               <div style={{ marginTop: 14 }}>
-                {canInterrupt && (
-                  <div className="interrupt-bar">
-                    <input type="text" placeholder="e.g. make the email field optional..."
-                      value={interruptText}
-                      onChange={(e) => setInterruptText(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && handleInterrupt()} />
-                    <button onClick={handleInterrupt}>⚡ Interrupt</button>
-                  </div>
-                )}
-
                 <div style={{ display: "flex", gap: 8 }}>
                   {canApprove && (
                     <>
