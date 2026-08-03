@@ -2,15 +2,6 @@ import { useEffect, useRef, useState } from "react";
 
 const WS_URL = "ws://localhost:8000/ws/qc";
 
-function readFileAsBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.split(",")[1]);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
-
 const PHASE_LABELS = {
   idle:               null,
   resolving:          { label: "Resolving",         tone: "accent"   },
@@ -36,50 +27,12 @@ function Badge({ tone, children }) {
   return <span className={`badge ${tone}`}>{children}</span>;
 }
 
-function FileBox({ label, sub, file, inputRef, onChange, disabled }) {
-  return (
-    <label className={`file-box${file ? " has-file" : ""}`}>
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".zip"
-        style={{ display: "none" }}
-        onChange={(e) => onChange(e.target.files?.[0] || null)}
-        disabled={disabled}
-      />
-      <div className="file-box-icon">📦</div>
-      <div className="file-box-name">{file ? file.name : label}</div>
-      <div className="file-box-sub">{file ? "Click to change" : sub}</div>
-    </label>
-  );
-}
-
-function BizFileBox({ file, inputRef, onChange, disabled }) {
-  return (
-    <label className={`file-box${file ? " has-file" : ""}`}>
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".pdf,.doc,.docx,.txt"
-        style={{ display: "none" }}
-        onChange={(e) => onChange(e.target.files?.[0] || null)}
-        disabled={disabled}
-      />
-      <div className="file-box-icon">📄</div>
-      <div className="file-box-name">{file ? file.name : "Business context"}</div>
-      <div className="file-box-sub">{file ? "Click to change" : "BRD, functional doc, notes (optional)"}</div>
-    </label>
-  );
-}
-
 export default function App() {
   const [scope, setScope]     = useState("screen"); // "screen" | "module"
   const [mode, setMode]       = useState("fetch");
   const [moduleName, setModuleName] = useState("Finance");
   const [screen, setScreen]   = useState("Instrument master");
   const [userRequest, setUserRequest] = useState("Generate tests for creating and updating this screen");
-  const [sourceFile, setSourceFile]   = useState(null);
-  const [bizFile, setBizFile]         = useState(null);
 
   const [phase, setPhase]   = useState("idle");
   const [result, setResult] = useState(null);
@@ -95,8 +48,6 @@ export default function App() {
   const wsRef        = useRef(null);
   const logBoxRef    = useRef(null);
   const lineIdRef    = useRef(0);
-  const sourceRef    = useRef(null);
-  const bizRef       = useRef(null);
 
   const log = (text, tone) => {
     lineIdRef.current += 1;
@@ -175,36 +126,19 @@ export default function App() {
     send({ action: "fetch", module: moduleName.trim(), screen: scope === "screen" ? screen.trim() : undefined, scope });
   };
 
-  const handleGenerate = async () => {
+  const handleGenerate = () => {
     if (!moduleName.trim() || (scope === "screen" && !screen.trim())) {
       setAlert({ message: scope === "screen" ? "Enter both module and screen name." : "Enter a module name.", tone: "danger" });
       return;
     }
-    if (!sourceFile) {
-      setAlert({ message: "Please upload the screen source code (.zip) before generating.", tone: "danger" });
-      return;
-    }
     resetRun();
-    log("Reading source file...", "secondary");
-    try {
-      const source_zip_base64 = await readFileAsBase64(sourceFile);
-      let business_context_base64 = null;
-      if (bizFile) {
-        log("Reading business context...", "secondary");
-        business_context_base64 = await readFileAsBase64(bizFile);
-      }
-      send({
-        action: "generate",
-        module: moduleName.trim(),
-        screen: scope === "screen" ? screen.trim() : undefined,
-        scope,
-        request: userRequest,
-        source_zip_base64,
-        business_context_base64,
-      });
-    } catch (e) {
-      setAlert({ message: `Could not read file: ${e}`, tone: "danger" });
-    }
+    send({
+      action: "generate",
+      module: moduleName.trim(),
+      screen: scope === "screen" ? screen.trim() : undefined,
+      scope,
+      request: userRequest,
+    });
   };
 
   const handleApprove  = () => send({ action: "approve" });
@@ -294,7 +228,7 @@ export default function App() {
 
           {mode === "fetch" ? (
             <button className="primary full" onClick={handleFetch} disabled={busy}>
-              ▶ Fetch existing
+              ▶ Fetch
             </button>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -304,25 +238,9 @@ export default function App() {
                   onChange={(e) => setUserRequest(e.target.value)} disabled={busy} />
               </div>
 
-              <FileBox
-                label="Source code (.zip)"
-                sub="Upload the screen's Angular source"
-                file={sourceFile}
-                inputRef={sourceRef}
-                onChange={setSourceFile}
-                disabled={busy}
-              />
-
-              <BizFileBox
-                file={bizFile}
-                inputRef={bizRef}
-                onChange={setBizFile}
-                disabled={busy}
-              />
-
               <button className="primary full" onClick={handleGenerate}
                 disabled={busy}>
-                ✦ Generate new
+                ✦ Generate
               </button>
             </div>
           )}
