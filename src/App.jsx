@@ -83,10 +83,12 @@ export default function App() {
 
   const [phase, setPhase]   = useState("idle");
   const [result, setResult] = useState(null);
+  const [moduleResult, setModuleResult] = useState(null); // [{ name, passed, exit_code }, ...]
   const [lines, setLines]   = useState([]);
   const [connected, setConnected] = useState(false);
   const [logMaximized, setLogMaximized] = useState(false);
   const [artifacts, setArtifacts] = useState(null);
+  const [selectedScreen, setSelectedScreen] = useState(0); // index into artifacts.screens (module scope)
   const [alert, setAlert]   = useState(null); // { message, tone }
   const [lastRun, setLastRun] = useState(null); // { module, screen, passed }
 
@@ -121,6 +123,7 @@ export default function App() {
         if (msg.phase !== "done") setResult(null);
       } else if (msg.type === "artifacts") {
         setArtifacts(msg);
+        setSelectedScreen(0);
       } else if (msg.type === "result") {
         setResult({ passed: msg.passed, exit_code: msg.exit_code });
         setLastRun({
@@ -128,6 +131,15 @@ export default function App() {
           screen,
           passed: msg.passed,
           count:  null,
+        });
+      } else if (msg.type === "module_result") {
+        setModuleResult(msg.results);
+        const allPassed = msg.results.every((r) => r.passed);
+        setLastRun({
+          module: moduleName,
+          screen: `${msg.results.length} screen(s)`,
+          passed: allPassed,
+          count:  msg.results.length,
         });
       } else if (msg.type === "error") {
         log(msg.message, "danger");
@@ -148,6 +160,8 @@ export default function App() {
   const resetRun = () => {
     setLines([]);
     setResult(null);
+    setModuleResult(null);
+    setSelectedScreen(0);
     setArtifacts(null);
     setAlert(null);
   };
@@ -195,10 +209,13 @@ export default function App() {
 
   const handleApprove  = () => send({ action: "approve" });
   const handleReject   = () => { resetRun(); send({ action: "reject" }); };
-  const handleRun      = () => { setLines([]); setResult(null); send({ action: "run" }); };
+  const handleRun      = () => { setLines([]); setResult(null); setModuleResult(null); send({ action: "run" }); };
 
   const phaseInfo    = PHASE_LABELS[phase] || null;
-  const hasArtifacts = !!(artifacts?.feature_file && artifacts?.script);
+  const hasArtifacts = !!(
+    (artifacts?.feature_file && artifacts?.script) ||
+    (artifacts?.screens && artifacts.screens.length > 0)
+  );
   const canRun       = hasArtifacts && phase === "awaiting_review";
   const canApprove   = hasArtifacts && phase === "awaiting_approval";
   const showLog      = lines.length > 0 || phase === "running" || phase === "done";
@@ -364,24 +381,58 @@ export default function App() {
               </div>
             )}
 
-            <div className="side-by-side">
-              <div className="sxs-panel">
-                <div className="sxs-panel-header">
-                  <span className="sxs-icon">📄</span>
-                  <span>Feature file</span>
-                </div>
-                <pre>{artifacts.feature_file}</pre>
+            {artifacts.scope === "module" && artifacts.screens && (
+              <div className="screen-chip-row">
+                {artifacts.screens.map((s, i) => (
+                  <button
+                    key={s.name}
+                    className={`screen-chip${i === selectedScreen ? " active" : ""}`}
+                    onClick={() => setSelectedScreen(i)}
+                  >
+                    {s.name}
+                  </button>
+                ))}
               </div>
-              <div className="sxs-panel">
-                <div className="sxs-panel-header">
-                  <span className="sxs-icon">{"</>"}</span>
-                  <span>Cypress script</span>
+            )}
+
+            {(() => {
+              const current = artifacts.scope === "module" && artifacts.screens
+                ? artifacts.screens[selectedScreen]
+                : artifacts;
+              if (!current) return null;
+              return (
+                <div className="side-by-side">
+                  <div className="sxs-panel">
+                    <div className="sxs-panel-header">
+                      <span className="sxs-icon">📄</span>
+                      <span>Feature file</span>
+                    </div>
+                    <pre>{current.feature_file}</pre>
+                  </div>
+                  <div className="sxs-panel">
+                    <div className="sxs-panel-header">
+                      <span className="sxs-icon">{"</>"}</span>
+                      <span>Cypress script</span>
+                    </div>
+                    <pre>{current.script}</pre>
+                  </div>
                 </div>
-                <pre>{artifacts.script}</pre>
+              );
+            })()}
+
+            {moduleResult && (
+              <div className="module-summary">
+                <p className="card-title">Module run summary</p>
+                {moduleResult.map((r) => (
+                  <div key={r.name} className="module-summary-row">
+                    <span>{r.name}</span>
+                    <Badge tone={r.passed ? "success" : "danger"}>
+                      {r.passed ? "✓ Passed" : "✗ Failed"}
+                    </Badge>
+                  </div>
+                ))}
               </div>
-            </div>
-
-
+            )}
 
             {(canApprove || canRun) && (
               <div style={{ marginTop: 14 }}>

@@ -247,6 +247,48 @@ button.full { width: 100%; }
 /* ── SCOPE TABS (narrower, sits above action tabs) ─────────────── */
 .scope-tabs { margin-bottom: 0; }
 
+/* ── SCREEN CHIP ROW (module scope screen picker) ────────────────*/
+.screen-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.screen-chip {
+  height: auto;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+}
+.screen-chip:hover { background: var(--surface-2); }
+.screen-chip.active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+
+/* ── MODULE RUN SUMMARY ───────────────────────────────────────── */
+.module-summary {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+}
+.module-summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.module-summary-row:last-child { border-bottom: none; }
+
 /* ── SIDE BY SIDE (feature + script shown together) ──────────────*/
 .side-by-side {
   display: grid;
