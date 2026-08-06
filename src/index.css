@@ -158,6 +158,11 @@ input[type="text"]:disabled {
   color: var(--text-muted);
   cursor: not-allowed;
 }
+textarea {
+  resize: vertical;
+  min-height: 76px;
+  line-height: 1.5;
+}
 
 /* ── TABS ─────────────────────────────────────────────────────── */
 .tabs {
@@ -247,7 +252,7 @@ button.full { width: 100%; }
 /* ── SCOPE TABS (narrower, sits above action tabs) ─────────────── */
 .scope-tabs { margin-bottom: 0; }
 
-/* ── SCREEN CHIP ROW (module scope screen picker) ────────────────*/
+/* ── SCREEN CHIP ROW (small conflict-preview picker; also legacy) ─*/
 .screen-chip-row {
   display: flex;
   flex-wrap: wrap;
@@ -269,6 +274,51 @@ button.full { width: 100%; }
   background: var(--brand);
   border-color: var(--brand);
   color: #fff;
+}
+
+/* ── SCREEN PICKER (searchable dropdown, module scope) ───────────*/
+.screen-picker {
+  margin-bottom: 14px;
+  max-width: 340px;
+}
+.combobox {
+  position: relative;
+}
+.combobox-input {
+  cursor: text;
+}
+.combobox-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(15,23,42,0.12);
+  z-index: 20;
+  padding: 4px;
+}
+.combobox-option {
+  padding: 8px 10px;
+  border-radius: 7px;
+  font-size: 13.5px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.combobox-option:hover { background: var(--surface-2); }
+.combobox-option.active {
+  background: var(--brand-light);
+  color: var(--brand-dark);
+  font-weight: 600;
+}
+.combobox-empty {
+  padding: 10px;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
 }
 
 /* ── MODULE RUN SUMMARY ───────────────────────────────────────── */
@@ -483,3 +533,67 @@ button.full { width: 100%; }
 .alert.danger  { background: var(--bg-danger);  color: var(--text-danger);  border-color: var(--border-danger);  }
 .alert.warning { background: var(--bg-warning); color: var(--text-warning); border-color: var(--border-warning); }
 .alert.success { background: var(--bg-success); color: var(--text-success); border-color: var(--border-success); }
+
+/* ── FEATURE FILE VIEW (collapsible scenarios, VS Code fold style) ──────*/
+.feature-view {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  max-height: 340px;
+  overflow: auto;
+}
+.feature-header {
+  margin: 0;
+  padding: 14px 14px 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: #fafafa;
+  white-space: pre-wrap;
+  color: #374151;
+}
+.feature-scenario {
+  border-top: 1px solid var(--border);
+}
+.feature-scenario-toggle {
+  width: 100%;
+  height: auto;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 14px;
+  background: #fafafa;
+  border: none;
+  border-radius: 0;
+  color: #374151;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  white-space: pre-wrap;
+}
+.feature-scenario-toggle:hover { background: #f0f1f3; }
+.feature-scenario.open .feature-scenario-toggle { background: #eef2fb; }
+.feature-fold-arrow {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  width: 10px;
+  display: inline-block;
+}
+.feature-scenario-tag {
+  flex: none;
+  color: var(--text-accent);
+  font-weight: 600;
+}
+.feature-scenario-title {
+  color: #374151;
+}
+.feature-scenario-body {
+  margin: 0;
+  padding: 4px 14px 12px 32px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: #fafafa;
+  white-space: pre-wrap;
+  color: #374151;
+}

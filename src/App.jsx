@@ -1,15 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const WS_URL = "ws://localhost:8000/ws/qc";
-
-function readFileAsBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.split(",")[1]);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
 
 const PHASE_LABELS = {
   idle:               null,
@@ -17,6 +8,7 @@ const PHASE_LABELS = {
   running:            { label: "Running",            tone: "accent"   },
   awaiting_review:    { label: "Ready to run",       tone: "warning"  },
   awaiting_approval:  { label: "Awaiting approval",  tone: "warning"  },
+  awaiting_conflict:  { label: "Needs a decision",   tone: "warning"  },
   not_found:          { label: "Not found",          tone: "danger"   },
   done:               { label: "Done",               tone: "success"  },
 };
@@ -32,44 +24,92 @@ const TERM_TONE = {
 
 const TABLE_RE = /[┌┐└┘├┤┬┴┼─│═╞╡╥╨╫]/;
 
+// Splits a .feature file into its Feature/Background header (always shown)
+// and its Scenario/Scenario Outline blocks (rendered collapsed, click to
+// expand) — VS Code-style fold/unfold, not full syntax highlighting.
+function parseFeature(text) {
+  const lines = (text || "").split("\n");
+  const isScenarioLine = (s) => /^Scenario( Outline)?:/.test(s.trim());
+  const header = [];
+  const scenarios = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+    const tagPrecedesScenario = trimmed.startsWith("@") && lines[i + 1] !== undefined && isScenarioLine(lines[i + 1]);
+    if (isScenarioLine(trimmed) || tagPrecedesScenario) break;
+    header.push(lines[i]);
+    i++;
+  }
+
+  while (i < lines.length) {
+    let tag = null;
+    if (lines[i] !== undefined && lines[i].trim().startsWith("@")) {
+      tag = lines[i].trim();
+      i++;
+    }
+    const title = lines[i] || "";
+    i++;
+    const body = [];
+    while (i < lines.length) {
+      const trimmed = lines[i].trim();
+      const tagPrecedesNext = trimmed.startsWith("@") && lines[i + 1] !== undefined && isScenarioLine(lines[i + 1]);
+      if (isScenarioLine(trimmed) || tagPrecedesNext) break;
+      body.push(lines[i]);
+      i++;
+    }
+    scenarios.push({ tag, title: title.trim(), body: body.join("\n") });
+  }
+
+  return { header: header.join("\n"), scenarios };
+}
+
+function FeatureFileView({ text }) {
+  const { header, scenarios } = useMemo(() => parseFeature(text), [text]);
+  const [openSet, setOpenSet] = useState(() => new Set());
+
+  const toggle = (idx) => {
+    setOpenSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  };
+
+  if (scenarios.length === 0) {
+    // Nothing matched as a Scenario (unusual file) — fall back to plain text
+    // rather than showing an empty view.
+    return <pre>{text}</pre>;
+  }
+
+  return (
+    <div className="feature-view">
+      {header.trim() && <pre className="feature-header">{header}</pre>}
+      {scenarios.map((sc, idx) => {
+        const isOpen = openSet.has(idx);
+        return (
+          <div key={idx} className={`feature-scenario${isOpen ? " open" : ""}`}>
+            <button
+              type="button"
+              className="feature-scenario-toggle"
+              onClick={() => toggle(idx)}
+              aria-expanded={isOpen}
+            >
+              <span className="feature-fold-arrow">{isOpen ? "▾" : "▸"}</span>
+              {sc.tag && <span className="feature-scenario-tag">{sc.tag}</span>}
+              <span className="feature-scenario-title">{sc.title}</span>
+            </button>
+            {isOpen && <pre className="feature-scenario-body">{sc.body}</pre>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function Badge({ tone, children }) {
   return <span className={`badge ${tone}`}>{children}</span>;
-}
-
-function FileBox({ label, sub, file, inputRef, onChange, disabled }) {
-  return (
-    <label className={`file-box${file ? " has-file" : ""}`}>
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".zip"
-        style={{ display: "none" }}
-        onChange={(e) => onChange(e.target.files?.[0] || null)}
-        disabled={disabled}
-      />
-      <div className="file-box-icon">📦</div>
-      <div className="file-box-name">{file ? file.name : label}</div>
-      <div className="file-box-sub">{file ? "Click to change" : sub}</div>
-    </label>
-  );
-}
-
-function BizFileBox({ file, inputRef, onChange, disabled }) {
-  return (
-    <label className={`file-box${file ? " has-file" : ""}`}>
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".pdf,.doc,.docx,.txt"
-        style={{ display: "none" }}
-        onChange={(e) => onChange(e.target.files?.[0] || null)}
-        disabled={disabled}
-      />
-      <div className="file-box-icon">📄</div>
-      <div className="file-box-name">{file ? file.name : "Business context"}</div>
-      <div className="file-box-sub">{file ? "Click to change" : "BRD, functional doc, notes (optional)"}</div>
-    </label>
-  );
 }
 
 export default function App() {
@@ -77,9 +117,7 @@ export default function App() {
   const [mode, setMode]       = useState("fetch");
   const [moduleName, setModuleName] = useState("");
   const [screen, setScreen]   = useState("");
-  const [userRequest, setUserRequest] = useState("Generate tests for creating and updating this screen");
-  const [sourceFile, setSourceFile]   = useState(null);
-  const [bizFile, setBizFile]         = useState(null);
+  const [userRequest, setUserRequest] = useState("");
 
   const [phase, setPhase]   = useState("idle");
   const [result, setResult] = useState(null);
@@ -92,15 +130,27 @@ export default function App() {
   const [alert, setAlert]   = useState(null); // { message, tone }
   const [lastRun, setLastRun] = useState(null); // { module, screen, passed }
 
+  // Module-scope screen picker (searchable dropdown)
+  const [screenQuery, setScreenQuery] = useState("");
+  const [screenDropdownOpen, setScreenDropdownOpen] = useState(false);
+
+  // Replace/Append conflict (fires when Generate targets a screen that
+  // already has a feature/script in the QC repo)
+  const [conflict, setConflict]   = useState(null); // { scope, conflicts: [{name, existing_feature, existing_script}], new_count }
+  const [conflictPreview, setConflictPreview] = useState(0); // index into conflict.conflicts being previewed
+  const [appendMode, setAppendMode] = useState(false);
+  const [appendText, setAppendText] = useState("");
+
   const wsRef        = useRef(null);
   const logBoxRef    = useRef(null);
   const lineIdRef    = useRef(0);
-  const sourceRef    = useRef(null);
-  const bizRef       = useRef(null);
 
   const log = (text, tone) => {
-    lineIdRef.current += 1;
-    setLines((prev) => [...prev, { text, tone, id: lineIdRef.current }]);
+    setLines((prev) => {
+      if (prev.length > 0 && prev[prev.length - 1].text === text) return prev;
+      lineIdRef.current += 1;
+      return [...prev, { text, tone, id: lineIdRef.current }];
+    });
   };
 
   useEffect(() => {
@@ -124,6 +174,12 @@ export default function App() {
       } else if (msg.type === "artifacts") {
         setArtifacts(msg);
         setSelectedScreen(0);
+        setConflict(null);
+      } else if (msg.type === "conflict") {
+        setConflict(msg);
+        setConflictPreview(0);
+        setAppendMode(false);
+        setAppendText("");
       } else if (msg.type === "result") {
         setResult({ passed: msg.passed, exit_code: msg.exit_code });
         setLastRun({
@@ -152,9 +208,10 @@ export default function App() {
   const send = (payload) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(payload));
-    } else {
-      setAlert({ message: "Not connected to the backend — is uvicorn running?", tone: "danger" });
+      return true;
     }
+    setAlert({ message: "Not connected to the backend — is uvicorn running?", tone: "danger" });
+    return false;
   };
 
   const resetRun = () => {
@@ -164,6 +221,11 @@ export default function App() {
     setSelectedScreen(0);
     setArtifacts(null);
     setAlert(null);
+    setConflict(null);
+    setAppendMode(false);
+    setAppendText("");
+    setScreenQuery("");
+    setScreenDropdownOpen(false);
   };
 
   const handleFetch = () => {
@@ -172,44 +234,57 @@ export default function App() {
       return;
     }
     resetRun();
-    send({ action: "fetch", module: moduleName.trim(), screen: scope === "screen" ? screen.trim() : undefined, scope });
+    const sent = send({ action: "fetch", module: moduleName.trim(), screen: scope === "screen" ? screen.trim() : undefined, scope });
+    if (sent) {
+      setPhase("resolving");
+      log("reading gitlab repo structure...", "secondary");
+    }
   };
 
-  const handleGenerate = async () => {
+  const handleGenerate = () => {
     if (!moduleName.trim() || (scope === "screen" && !screen.trim())) {
       setAlert({ message: scope === "screen" ? "Enter both module and screen name." : "Enter a module name.", tone: "danger" });
       return;
     }
-    if (!sourceFile) {
-      setAlert({ message: "Please upload the screen source code (.zip) before generating.", tone: "danger" });
-      return;
-    }
     resetRun();
-    log("Reading source file...", "secondary");
-    try {
-      const source_zip_base64 = await readFileAsBase64(sourceFile);
-      let business_context_base64 = null;
-      if (bizFile) {
-        log("Reading business context...", "secondary");
-        business_context_base64 = await readFileAsBase64(bizFile);
-      }
-      send({
-        action: "generate",
-        module: moduleName.trim(),
-        screen: scope === "screen" ? screen.trim() : undefined,
-        scope,
-        request: userRequest,
-        source_zip_base64,
-        business_context_base64,
-      });
-    } catch (e) {
-      setAlert({ message: `Could not read file: ${e}`, tone: "danger" });
+    const sent = send({
+      action: "generate",
+      module: moduleName.trim(),
+      screen: scope === "screen" ? screen.trim() : undefined,
+      scope,
+      request: userRequest,
+    });
+    if (sent) {
+      setPhase("resolving");
+      log("reading source repo structure...", "secondary");
     }
   };
 
   const handleApprove  = () => send({ action: "approve" });
   const handleReject   = () => { resetRun(); send({ action: "reject" }); };
+
+  const handleReplace = () => {
+    send({ action: "generate_decision", decision: "replace" });
+    setConflict(null);
+  };
+  const handleConfirmAppend = () => {
+    if (!appendText.trim()) return;
+    send({ action: "generate_decision", decision: "append", append_request: appendText.trim() });
+    setConflict(null);
+    setAppendMode(false);
+    setAppendText("");
+  };
+  const handleCancelConflict = () => {
+    send({ action: "reject" });
+    resetRun();
+    setPhase("idle");
+  };
   const handleRun      = () => { setLines([]); setResult(null); setModuleResult(null); send({ action: "run" }); };
+  const handleTerminate = () => {
+    send({ action: "terminate" });
+    resetRun();
+    setPhase("idle");
+  };
 
   const phaseInfo    = PHASE_LABELS[phase] || null;
   const hasArtifacts = !!(
@@ -220,6 +295,7 @@ export default function App() {
   const canApprove   = hasArtifacts && phase === "awaiting_approval";
   const showLog      = lines.length > 0 || phase === "running" || phase === "done";
   const busy         = phase === "resolving" || phase === "running";
+  const showConflict = !!conflict && phase === "awaiting_conflict";
 
   return (
     <>
@@ -294,39 +370,29 @@ export default function App() {
 
           {mode === "fetch" ? (
             <button className="primary full" onClick={handleFetch} disabled={busy}>
-              ▶ Fetch existing
+              ▶ Fetch
             </button>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <div>
                 <label className="field-label">Test request</label>
-                <input type="text" value={userRequest}
+                <input type="text" placeholder="e.g. Generate tests for creating and updating this screen" value={userRequest}
                   onChange={(e) => setUserRequest(e.target.value)} disabled={busy} />
               </div>
 
-              <FileBox
-                label="Source code (.zip)"
-                sub="Upload the screen's Angular source"
-                file={sourceFile}
-                inputRef={sourceRef}
-                onChange={setSourceFile}
-                disabled={busy}
-              />
-
-              <BizFileBox
-                file={bizFile}
-                inputRef={bizRef}
-                onChange={setBizFile}
-                disabled={busy}
-              />
-
               <button className="primary full" onClick={handleGenerate}
                 disabled={busy}>
-                ✦ Generate new
+                ✦ Generate
               </button>
             </div>
           )}
         </div>
+
+        {busy && (
+          <button className="danger full" onClick={handleTerminate}>
+            ■ Terminate
+          </button>
+        )}
 
         {/* Alert */}
         {alert && (
@@ -351,15 +417,100 @@ export default function App() {
       {/* RIGHT PANEL */}
       <main className="right-panel">
 
-        {!hasArtifacts && !showLog && (
+        {!hasArtifacts && !showLog && !showConflict && (
           <div className="empty-state">
             <div className="empty-state-icon">🔍</div>
             <p>Fetch an existing screen to review its test files,<br />or generate new tests from source code.</p>
           </div>
         )}
 
+        {/* Replace / Append conflict resolution */}
+        {showConflict && (() => {
+          const preview = conflict.conflicts[conflictPreview];
+          const isModule = conflict.scope === "module";
+          return (
+            <div>
+              <div className="section-header">
+                <span className="section-title">
+                  {isModule
+                    ? `${conflict.conflicts.length} of ${conflict.conflicts.length + conflict.new_count} screen(s) already have tests`
+                    : `${preview.name} already has tests in the QC repo`}
+                </span>
+                {phaseInfo && <Badge tone={phaseInfo.tone}>{phaseInfo.label}</Badge>}
+              </div>
+
+              {isModule && conflict.new_count > 0 && (
+                <div className="alert warning" style={{ marginBottom: 10 }}>
+                  {conflict.new_count} screen(s) in this module have no existing tests — those will be generated fresh either way.
+                </div>
+              )}
+
+              {isModule && conflict.conflicts.length > 1 && (
+                <div className="screen-chip-row">
+                  {conflict.conflicts.map((c, i) => (
+                    <button
+                      key={c.name}
+                      className={`screen-chip${i === conflictPreview ? " active" : ""}`}
+                      onClick={() => setConflictPreview(i)}
+                    >
+                      {c.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="side-by-side">
+                <div className="sxs-panel">
+                  <div className="sxs-panel-header">
+                    <span className="sxs-icon">📄</span>
+                    <span>Existing feature file</span>
+                  </div>
+                  <FeatureFileView key={preview.existing_feature} text={preview.existing_feature} />
+                </div>
+                <div className="sxs-panel">
+                  <div className="sxs-panel-header">
+                    <span className="sxs-icon">{"</>"}</span>
+                    <span>Existing script</span>
+                  </div>
+                  <pre>{preview.existing_script}</pre>
+                </div>
+              </div>
+
+              {isModule && (
+                <div className="alert warning" style={{ marginBottom: 4 }}>
+                  Whatever you choose applies to all {conflict.conflicts.length} screen(s) listed above.
+                </div>
+              )}
+
+              {!appendMode ? (
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                  <button className="primary" onClick={handleReplace}>↻ Replace</button>
+                  <button onClick={() => setAppendMode(true)}>➕ Append</button>
+                  <button className="danger" onClick={handleCancelConflict}>✗ Cancel</button>
+                </div>
+              ) : (
+                <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div>
+                    <label className="field-label">What should be added?</label>
+                    <textarea
+                      rows={4}
+                      placeholder="Paste a full scenario you've written, or describe what to add — e.g. &quot;add a scenario for negative amount validation&quot;"
+                      value={appendText}
+                      onChange={(e) => setAppendText(e.target.value)}
+                    />
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button className="primary" onClick={handleConfirmAppend} disabled={!appendText.trim()}>✓ Append</button>
+                    <button onClick={() => setAppendMode(false)}>← Back</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* Artifacts review */}
-        {hasArtifacts && (
+        {hasArtifacts && !showConflict && (
           <div>
             <div className="section-header">
               <span className="section-title">
@@ -381,19 +532,56 @@ export default function App() {
               </div>
             )}
 
-            {artifacts.scope === "module" && artifacts.screens && (
-              <div className="screen-chip-row">
-                {artifacts.screens.map((s, i) => (
-                  <button
-                    key={s.name}
-                    className={`screen-chip${i === selectedScreen ? " active" : ""}`}
-                    onClick={() => setSelectedScreen(i)}
-                  >
-                    {s.name}
-                  </button>
-                ))}
-              </div>
-            )}
+            {artifacts.scope === "module" && artifacts.screens && (() => {
+              // s.name is the full resolved directory (e.g.
+              // "Regression_Testing/ESS_Module/AttendanceAdjustment") — only
+              // show the last segment (the actual screen name) in the UI,
+              // full path stays available as a title tooltip.
+              const shortName = (fullName) => fullName.split("/").filter(Boolean).pop() || fullName;
+
+              const filtered = artifacts.screens
+                .map((s, i) => ({ s, i }))
+                .filter(({ s }) => shortName(s.name).toLowerCase().includes(screenQuery.toLowerCase()));
+              const currentName = shortName(artifacts.screens[selectedScreen]?.name || "");
+              return (
+                <div className="screen-picker">
+                  <label className="field-label">Screen ({artifacts.screens.length})</label>
+                  <div className="combobox">
+                    <input
+                      type="text"
+                      className="combobox-input"
+                      placeholder="Search screens..."
+                      title={artifacts.screens[selectedScreen]?.name || ""}
+                      value={screenDropdownOpen ? screenQuery : currentName}
+                      onFocus={() => { setScreenDropdownOpen(true); setScreenQuery(""); }}
+                      onChange={(e) => setScreenQuery(e.target.value)}
+                      onBlur={() => setTimeout(() => setScreenDropdownOpen(false), 120)}
+                    />
+                    {screenDropdownOpen && (
+                      <div className="combobox-list">
+                        {filtered.length === 0 && (
+                          <div className="combobox-empty">No screens match "{screenQuery}"</div>
+                        )}
+                        {filtered.map(({ s, i }) => (
+                          <div
+                            key={s.name}
+                            className={`combobox-option${i === selectedScreen ? " active" : ""}`}
+                            title={s.name}
+                            onMouseDown={() => {
+                              setSelectedScreen(i);
+                              setScreenDropdownOpen(false);
+                              setScreenQuery("");
+                            }}
+                          >
+                            {shortName(s.name)}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
 
             {(() => {
               const current = artifacts.scope === "module" && artifacts.screens
@@ -407,7 +595,7 @@ export default function App() {
                       <span className="sxs-icon">📄</span>
                       <span>Feature file</span>
                     </div>
-                    <pre>{current.feature_file}</pre>
+                    <FeatureFileView key={current.feature_file} text={current.feature_file} />
                   </div>
                   <div className="sxs-panel">
                     <div className="sxs-panel-header">
