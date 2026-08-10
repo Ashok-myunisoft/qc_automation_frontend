@@ -112,6 +112,26 @@ function Badge({ tone, children }) {
   return <span className={`badge ${tone}`}>{children}</span>;
 }
 
+// Task C — inline edit for a single panel's content. Keeps its own draft
+// state so typing doesn't rerender the whole app tree on every keystroke;
+// commits to the parent (via onSave) only on explicit Save.
+function PanelEditor({ initialText, onSave, onCancel }) {
+  const [draft, setDraft] = useState(initialText || "");
+  return (
+    <div className="panel-editor">
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        spellCheck={false}
+      />
+      <div className="panel-editor-actions">
+        <button className="secondary" onClick={onCancel}>Cancel</button>
+        <button className="primary"   onClick={() => onSave(draft)}>Save</button>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [scope, setScope]     = useState("screen"); // "screen" | "module"
   const [mode, setMode]       = useState("fetch");
@@ -127,6 +147,13 @@ export default function App() {
   const [logMaximized, setLogMaximized] = useState(false);
   const [artifacts, setArtifacts] = useState(null);
   const [selectedScreen, setSelectedScreen] = useState(0); // index into artifacts.screens (module scope)
+  // Task C — inline edit before commit. Keyed by screen index (0 for single-scope) so
+  // each panel remembers its own edit mode + edited text across selectedScreen switches.
+  const [editing, setEditing] = useState({}); // { "0:feature": true, "0:script": false, ... }
+  const [edits, setEdits] = useState({});     // { "0:feature": "edited text", ... }
+  // Task A/B — inline preview overlay for the report and screenshot compilation.
+  const [preview, setPreview] = useState(null); // { kind: "report"|"screenshots", html, filename }
+  const [reportAvailable, setReportAvailable] = useState(false);
   const [alert, setAlert]   = useState(null); // { message, tone }
   const [lastRun, setLastRun] = useState(null); // { module, screen, passed }
 
@@ -182,6 +209,7 @@ export default function App() {
         setAppendText("");
       } else if (msg.type === "result") {
         setResult({ passed: msg.passed, exit_code: msg.exit_code });
+        setReportAvailable(true);
         setLastRun({
           module: moduleName,
           screen,
@@ -190,6 +218,7 @@ export default function App() {
         });
       } else if (msg.type === "module_result") {
         setModuleResult(msg.results);
+        setReportAvailable(true);
         const allPassed = msg.results.every((r) => r.passed);
         setLastRun({
           module: moduleName,
@@ -197,6 +226,29 @@ export default function App() {
           passed: allPassed,
           count:  msg.results.length,
         });
+      } else if (msg.type === "report") {
+        // Task A — Excel, binary. Straight-to-download, no inline preview
+        // (an .xlsx doesn't render usefully in a browser iframe).
+        const byteChars = atob(msg.content_base64);
+        const byteNumbers = new Array(byteChars.length);
+        for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+        const blob = new Blob([new Uint8Array(byteNumbers)], { type: msg.mime });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = msg.filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } else if (msg.type === "screenshots") {
+        // Task B — HTML, previewed inline before downloading.
+        setPreview({ kind: msg.type, html: msg.html, filename: msg.filename });
+      } else if (msg.type === "terminated") {
+        // Full refresh — spec of Terminate is that everything (including any
+        // completed run's report/screenshots) goes back to a clean slate.
+        resetRun();
+        setPhase("idle");
       } else if (msg.type === "error") {
         log(msg.message, "danger");
         setAlert({ message: msg.message, tone: "danger" });
@@ -226,6 +278,10 @@ export default function App() {
     setAppendText("");
     setScreenQuery("");
     setScreenDropdownOpen(false);
+    setEditing({});
+    setEdits({});
+    setPreview(null);
+    setReportAvailable(false);
   };
 
   const handleFetch = () => {
@@ -260,7 +316,31 @@ export default function App() {
     }
   };
 
-  const handleApprove  = () => send({ action: "approve" });
+  const handleApprove = () => {
+    // Bundle any Task-C inline edits so what we push to gitlab is exactly
+    // what the human reviewed. Backend accepts msg.feature/msg.script for
+    // single scope, msg.edits[] for module scope.
+    const payload = { action: "approve" };
+    if (artifacts?.scope === "module" && artifacts?.screens) {
+      const bundle = [];
+      artifacts.screens.forEach((_, i) => {
+        const f = edits[`${i}:feature`];
+        const s = edits[`${i}:script`];
+        if (typeof f === "string" || typeof s === "string") {
+          bundle.push({
+            index: i,
+            ...(typeof f === "string" ? { feature: f } : {}),
+            ...(typeof s === "string" ? { script:  s } : {}),
+          });
+        }
+      });
+      if (bundle.length) payload.edits = bundle;
+    } else {
+      if (typeof edits["0:feature"] === "string") payload.feature = edits["0:feature"];
+      if (typeof edits["0:script"]  === "string") payload.script  = edits["0:script"];
+    }
+    send(payload);
+  };
   const handleReject   = () => { resetRun(); send({ action: "reject" }); };
 
   const handleReplace = () => {
@@ -279,7 +359,27 @@ export default function App() {
     resetRun();
     setPhase("idle");
   };
-  const handleRun      = () => { setLines([]); setResult(null); setModuleResult(null); send({ action: "run" }); };
+  const handleRun      = () => {
+    setLines([]);
+    setResult(null);
+    setModuleResult(null);
+    setReportAvailable(false);  // stale from any prior run — a new run supersedes
+    send({ action: "run" });
+  };
+  const handleReport      = () => send({ action: "report" });
+  const handleScreenshots = () => send({ action: "screenshots" });
+  const handleDownloadPreview = () => {
+    if (!preview) return;
+    const blob = new Blob([preview.html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = preview.filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
   const handleTerminate = () => {
     send({ action: "terminate" });
     resetRun();
@@ -299,6 +399,32 @@ export default function App() {
 
   return (
     <>
+      {/* Task A+B — inline preview overlay, opens when user clicks Report / Screenshots
+          after a run finishes. Renders the returned HTML in a sandboxed iframe so its
+          styles never leak into the console, and offers a Download button that saves
+          the exact same HTML to disk. */}
+      {preview && (
+        <div className="preview-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setPreview(null); }}>
+          <div className="preview-frame">
+            <div className="preview-header">
+              <div className="preview-title">
+                Screenshots — preview
+              </div>
+              <div className="preview-actions">
+                <button className="secondary" onClick={handleDownloadPreview}>⬇ Download</button>
+                <button className="secondary" onClick={() => setPreview(null)}>✕ Close</button>
+              </div>
+            </div>
+            <iframe
+              className="preview-iframe"
+              title={preview.filename}
+              srcDoc={preview.html}
+              sandbox="allow-same-origin"
+            />
+          </div>
+        </div>
+      )}
+
       {/* TOP BAR */}
       <header className="topbar">
         <div className="topbar-brand">
@@ -588,21 +714,86 @@ export default function App() {
                 ? artifacts.screens[selectedScreen]
                 : artifacts;
               if (!current) return null;
+              const idx = artifacts.scope === "module" ? selectedScreen : 0;
+
+              // Task C — a panel shows its edited text (if any) once edited,
+              // otherwise the original AI content. This survives selectedScreen
+              // switches because edits are keyed by "<idx>:<kind>".
+              const featureKey  = `${idx}:feature`;
+              const scriptKey   = `${idx}:script`;
+              const featureText = typeof edits[featureKey] === "string" ? edits[featureKey] : current.feature_file;
+              const scriptText  = typeof edits[scriptKey]  === "string" ? edits[scriptKey]  : current.script;
+              const featureEditing = !!editing[featureKey];
+              const scriptEditing  = !!editing[scriptKey];
+
+              const canEdit = artifacts.origin === "generate" && phase === "awaiting_approval";
+              const beginEdit = (key) => setEditing((e) => ({ ...e, [key]: true }));
+              const cancelEdit = (key) => {
+                setEditing((e) => ({ ...e, [key]: false }));
+                // Cancel discards the current session's edit for that panel too — otherwise
+                // "Cancel" without discarding would be misleading (approve would still push it).
+                setEdits((es) => { const n = { ...es }; delete n[key]; return n; });
+              };
+              const saveEdit = (key, textVal) => {
+                setEdits((es) => ({ ...es, [key]: textVal }));
+                setEditing((e) => ({ ...e, [key]: false }));
+              };
+
               return (
                 <div className="side-by-side">
                   <div className="sxs-panel">
                     <div className="sxs-panel-header">
                       <span className="sxs-icon">📄</span>
                       <span>Feature file</span>
+                      {typeof edits[featureKey] === "string" && !featureEditing && (
+                        <span className="edited-badge">edited</span>
+                      )}
+                      {canEdit && !featureEditing ? (
+                        <button
+                          className="panel-edit-btn"
+                          title="Edit feature file"
+                          onClick={() => beginEdit(featureKey)}
+                        >
+                          ✎ Edit
+                        </button>
+                      ) : null}
                     </div>
-                    <FeatureFileView key={current.feature_file} text={current.feature_file} />
+                    {featureEditing ? (
+                      <PanelEditor
+                        initialText={featureText}
+                        onSave={(val) => saveEdit(featureKey, val)}
+                        onCancel={() => cancelEdit(featureKey)}
+                      />
+                    ) : (
+                      <FeatureFileView key={featureText} text={featureText} />
+                    )}
                   </div>
                   <div className="sxs-panel">
                     <div className="sxs-panel-header">
                       <span className="sxs-icon">{"</>"}</span>
                       <span>Cypress script</span>
+                      {typeof edits[scriptKey] === "string" && !scriptEditing && (
+                        <span className="edited-badge">edited</span>
+                      )}
+                      {canEdit && !scriptEditing ? (
+                        <button
+                          className="panel-edit-btn"
+                          title="Edit script"
+                          onClick={() => beginEdit(scriptKey)}
+                        >
+                          ✎ Edit
+                        </button>
+                      ) : null}
                     </div>
-                    <pre>{current.script}</pre>
+                    {scriptEditing ? (
+                      <PanelEditor
+                        initialText={scriptText}
+                        onSave={(val) => saveEdit(scriptKey, val)}
+                        onCancel={() => cancelEdit(scriptKey)}
+                      />
+                    ) : (
+                      <pre>{scriptText}</pre>
+                    )}
                   </div>
                 </div>
               );
@@ -622,9 +813,9 @@ export default function App() {
               </div>
             )}
 
-            {(canApprove || canRun) && (
+            {(canApprove || canRun || reportAvailable) && (
               <div style={{ marginTop: 14 }}>
-                <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   {canApprove && (
                     <>
                       <button className="primary" onClick={handleApprove}>✓ Approve and push</button>
@@ -633,6 +824,12 @@ export default function App() {
                   )}
                   {canRun && (
                     <button className="primary" onClick={handleRun}>▶ Run</button>
+                  )}
+                  {reportAvailable && (
+                    <>
+                      <button className="secondary" onClick={handleReport} title="Download the QC report for the last run (Excel)">📊 Report (Excel)</button>
+                      <button className="secondary" onClick={handleScreenshots} title="Open the screenshot compilation for the last run">🖼 Screenshots</button>
+                    </>
                   )}
                 </div>
               </div>
