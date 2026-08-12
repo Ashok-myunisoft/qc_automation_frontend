@@ -24,9 +24,6 @@ const TERM_TONE = {
 
 const TABLE_RE = /[┌┐└┘├┤┬┴┼─│═╞╡╥╨╫]/;
 
-// Splits a .feature file into its Feature/Background header (always shown)
-// and its Scenario/Scenario Outline blocks (rendered collapsed, click to
-// expand) — VS Code-style fold/unfold, not full syntax highlighting.
 function parseFeature(text) {
   const lines = (text || "").split("\n");
   const isScenarioLine = (s) => /^Scenario( Outline)?:/.test(s.trim());
@@ -78,8 +75,6 @@ function FeatureFileView({ text }) {
   };
 
   if (scenarios.length === 0) {
-    // Nothing matched as a Scenario (unusual file) — fall back to plain text
-    // rather than showing an empty view.
     return <pre>{text}</pre>;
   }
 
@@ -112,9 +107,6 @@ function Badge({ tone, children }) {
   return <span className={`badge ${tone}`}>{children}</span>;
 }
 
-// Task C — inline edit for a single panel's content. Keeps its own draft
-// state so typing doesn't rerender the whole app tree on every keystroke;
-// commits to the parent (via onSave) only on explicit Save.
 function PanelEditor({ initialText, onSave, onCancel }) {
   const [draft, setDraft] = useState(initialText || "");
   return (
@@ -133,7 +125,7 @@ function PanelEditor({ initialText, onSave, onCancel }) {
 }
 
 export default function App() {
-  const [scope, setScope]     = useState("screen"); // "screen" | "module"
+  const [scope, setScope]     = useState("screen");
   const [mode, setMode]       = useState("fetch");
   const [moduleName, setModuleName] = useState("");
   const [screen, setScreen]   = useState("");
@@ -141,30 +133,24 @@ export default function App() {
 
   const [phase, setPhase]   = useState("idle");
   const [result, setResult] = useState(null);
-  const [moduleResult, setModuleResult] = useState(null); // [{ name, passed, exit_code }, ...]
+  const [moduleResult, setModuleResult] = useState(null);
   const [lines, setLines]   = useState([]);
   const [connected, setConnected] = useState(false);
   const [logMaximized, setLogMaximized] = useState(false);
   const [artifacts, setArtifacts] = useState(null);
-  const [selectedScreen, setSelectedScreen] = useState(0); // index into artifacts.screens (module scope)
-  // Task C — inline edit before commit. Keyed by screen index (0 for single-scope) so
-  // each panel remembers its own edit mode + edited text across selectedScreen switches.
-  const [editing, setEditing] = useState({}); // { "0:feature": true, "0:script": false, ... }
-  const [edits, setEdits] = useState({});     // { "0:feature": "edited text", ... }
-  // Task A/B — inline preview overlay for the report and screenshot compilation.
-  const [preview, setPreview] = useState(null); // { kind: "report"|"screenshots", html, filename }
+  const [selectedScreen, setSelectedScreen] = useState(0);
+  const [editing, setEditing] = useState({});
+  const [edits, setEdits] = useState({});
+  const [preview, setPreview] = useState(null);
   const [reportAvailable, setReportAvailable] = useState(false);
-  const [alert, setAlert]   = useState(null); // { message, tone }
-  const [lastRun, setLastRun] = useState(null); // { module, screen, passed }
+  const [alert, setAlert]   = useState(null);
+  const [lastRun, setLastRun] = useState(null);
 
-  // Module-scope screen picker (searchable dropdown)
   const [screenQuery, setScreenQuery] = useState("");
   const [screenDropdownOpen, setScreenDropdownOpen] = useState(false);
 
-  // Replace/Append conflict (fires when Generate targets a screen that
-  // already has a feature/script in the QC repo)
-  const [conflict, setConflict]   = useState(null); // { scope, conflicts: [{name, existing_feature, existing_script}], new_count }
-  const [conflictPreview, setConflictPreview] = useState(0); // index into conflict.conflicts being previewed
+  const [conflict, setConflict]   = useState(null);
+  const [conflictPreview, setConflictPreview] = useState(0);
   const [appendMode, setAppendMode] = useState(false);
   const [appendText, setAppendText] = useState("");
 
@@ -227,8 +213,6 @@ export default function App() {
           count:  msg.results.length,
         });
       } else if (msg.type === "report") {
-        // Task A — Excel, binary. Straight-to-download, no inline preview
-        // (an .xlsx doesn't render usefully in a browser iframe).
         const byteChars = atob(msg.content_base64);
         const byteNumbers = new Array(byteChars.length);
         for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
@@ -242,11 +226,8 @@ export default function App() {
         document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       } else if (msg.type === "screenshots") {
-        // Task B — HTML, previewed inline before downloading.
         setPreview({ kind: msg.type, html: msg.html, filename: msg.filename });
       } else if (msg.type === "terminated") {
-        // Full refresh — spec of Terminate is that everything (including any
-        // completed run's report/screenshots) goes back to a clean slate.
         resetRun();
         setPhase("idle");
       } else if (msg.type === "error") {
@@ -312,14 +293,15 @@ export default function App() {
     });
     if (sent) {
       setPhase("resolving");
-      log("reading source repo structure...", "secondary");
+      // Neutral, scope-agnostic — just proof of life the instant you click,
+      // replaced within moments by the real backend log lines in whatever
+      // order they actually happen (no hardcoded assumption about which
+      // repo gets checked first, so this can't drift out of sync again).
+      log("sending request...", "secondary");
     }
   };
 
   const handleApprove = () => {
-    // Bundle any Task-C inline edits so what we push to gitlab is exactly
-    // what the human reviewed. Backend accepts msg.feature/msg.script for
-    // single scope, msg.edits[] for module scope.
     const payload = { action: "approve" };
     if (artifacts?.scope === "module" && artifacts?.screens) {
       const bundle = [];
@@ -344,11 +326,23 @@ export default function App() {
   const handleReject   = () => { resetRun(); send({ action: "reject" }); };
 
   const handleReplace = () => {
+    // Instant feedback on click, same pattern as handleFetch/handleGenerate —
+    // without this, phase stayed whatever it was (not "resolving") until the
+    // backend's own status message round-tripped back, so Terminate wouldn't
+    // show and the log panel just sat frozen on the pre-conflict lines in
+    // the meantime, looking hung even when it was actually working.
+    setLines([]);
+    setPhase("resolving");
+    log("sending request...", "secondary");
     send({ action: "generate_decision", decision: "replace" });
     setConflict(null);
   };
   const handleConfirmAppend = () => {
     if (!appendText.trim()) return;
+    // Same fix as handleReplace, for the Append path.
+    setLines([]);
+    setPhase("resolving");
+    log("sending request...", "secondary");
     send({ action: "generate_decision", decision: "append", append_request: appendText.trim() });
     setConflict(null);
     setAppendMode(false);
@@ -363,7 +357,7 @@ export default function App() {
     setLines([]);
     setResult(null);
     setModuleResult(null);
-    setReportAvailable(false);  // stale from any prior run — a new run supersedes
+    setReportAvailable(false);
     send({ action: "run" });
   };
   const handleReport      = () => send({ action: "report" });
@@ -393,16 +387,12 @@ export default function App() {
   );
   const canRun       = hasArtifacts && phase === "awaiting_review";
   const canApprove   = hasArtifacts && phase === "awaiting_approval";
-  const showLog      = lines.length > 0 || phase === "running" || phase === "done";
+  const showLog      = lines.length > 0 || phase === "resolving" || phase === "running" || phase === "done";
   const busy         = phase === "resolving" || phase === "running";
   const showConflict = !!conflict && phase === "awaiting_conflict";
 
   return (
     <>
-      {/* Task A+B — inline preview overlay, opens when user clicks Report / Screenshots
-          after a run finishes. Renders the returned HTML in a sandboxed iframe so its
-          styles never leak into the console, and offers a Download button that saves
-          the exact same HTML to disk. */}
       {preview && (
         <div className="preview-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setPreview(null); }}>
           <div className="preview-frame">
@@ -425,7 +415,6 @@ export default function App() {
         </div>
       )}
 
-      {/* TOP BAR */}
       <header className="topbar">
         <div className="topbar-brand">
           <div className="topbar-logo">GB</div>
@@ -441,10 +430,8 @@ export default function App() {
         </div>
       </header>
 
-      {/* LEFT PANEL */}
       <aside className="left-panel">
 
-        {/* Scope */}
         <div>
           <p className="card-title">Scope</p>
           <div className="tabs scope-tabs">
@@ -459,7 +446,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Module / Screen */}
         <div>
           <p className="card-title">{scope === "module" ? "Module" : "Screen"}</p>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -480,7 +466,6 @@ export default function App() {
 
         <div className="divider" />
 
-        {/* Mode tabs */}
         <div>
           <p className="card-title">Action</p>
           <div className="tabs" style={{ marginBottom: 14 }}>
@@ -520,14 +505,12 @@ export default function App() {
           </button>
         )}
 
-        {/* Alert */}
         {alert && (
           <div className={`alert ${alert.tone}`} style={{ marginTop: 4 }}>
             {alert.message}
           </div>
         )}
 
-        {/* Last run */}
         {lastRun && (
           <div className="last-run">
             <div className="last-run-label">Last run</div>
@@ -540,7 +523,6 @@ export default function App() {
 
       </aside>
 
-      {/* RIGHT PANEL */}
       <main className="right-panel">
 
         {!hasArtifacts && !showLog && !showConflict && (
@@ -550,7 +532,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Replace / Append conflict resolution */}
         {showConflict && (() => {
           const preview = conflict.conflicts[conflictPreview];
           const isModule = conflict.scope === "module";
@@ -635,7 +616,6 @@ export default function App() {
           );
         })()}
 
-        {/* Artifacts review */}
         {hasArtifacts && !showConflict && (
           <div>
             <div className="section-header">
@@ -659,10 +639,6 @@ export default function App() {
             )}
 
             {artifacts.scope === "module" && artifacts.screens && (() => {
-              // s.name is the full resolved directory (e.g.
-              // "Regression_Testing/ESS_Module/AttendanceAdjustment") — only
-              // show the last segment (the actual screen name) in the UI,
-              // full path stays available as a title tooltip.
               const shortName = (fullName) => fullName.split("/").filter(Boolean).pop() || fullName;
 
               const filtered = artifacts.screens
@@ -716,9 +692,6 @@ export default function App() {
               if (!current) return null;
               const idx = artifacts.scope === "module" ? selectedScreen : 0;
 
-              // Task C — a panel shows its edited text (if any) once edited,
-              // otherwise the original AI content. This survives selectedScreen
-              // switches because edits are keyed by "<idx>:<kind>".
               const featureKey  = `${idx}:feature`;
               const scriptKey   = `${idx}:script`;
               const featureText = typeof edits[featureKey] === "string" ? edits[featureKey] : current.feature_file;
@@ -730,8 +703,6 @@ export default function App() {
               const beginEdit = (key) => setEditing((e) => ({ ...e, [key]: true }));
               const cancelEdit = (key) => {
                 setEditing((e) => ({ ...e, [key]: false }));
-                // Cancel discards the current session's edit for that panel too — otherwise
-                // "Cancel" without discarding would be misleading (approve would still push it).
                 setEdits((es) => { const n = { ...es }; delete n[key]; return n; });
               };
               const saveEdit = (key, textVal) => {
@@ -837,7 +808,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Run log */}
         {showLog && (
           <div>
             <div className="section-header">
