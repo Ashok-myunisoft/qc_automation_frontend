@@ -124,6 +124,44 @@ function PanelEditor({ initialText, onSave, onCancel }) {
   );
 }
 
+// Dropdown panel for the test-target env config (baseUrl / dbName /
+// userName / password). Opened from the hamburger icon in the top bar
+// (next to the GB logo) rather than living inline in the sidebar. Anchored
+// under the trigger, closes on outside-click or after a successful save.
+function EnvMenu({ envDraft, setEnvDraft, onSave, panelRef }) {
+  return (
+    <div className="env-dropdown-panel" ref={panelRef}>
+      <div>
+        <label className="field-label">Base URL</label>
+        <input type="text"
+          value={envDraft.baseUrl}
+          onChange={(e) => setEnvDraft((d) => ({ ...d, baseUrl: e.target.value }))} />
+      </div>
+      <div>
+        <label className="field-label">Database name</label>
+        <input type="text"
+          value={envDraft.dbName}
+          onChange={(e) => setEnvDraft((d) => ({ ...d, dbName: e.target.value }))} />
+      </div>
+      <div>
+        <label className="field-label">Username</label>
+        <input type="text"
+          value={envDraft.userName}
+          onChange={(e) => setEnvDraft((d) => ({ ...d, userName: e.target.value }))} />
+      </div>
+      <div>
+        <label className="field-label">Password</label>
+        <input type="password"
+          value={envDraft.password}
+          onChange={(e) => setEnvDraft((d) => ({ ...d, password: e.target.value }))} />
+      </div>
+      <button className="primary full env-dropdown-save" onClick={onSave}>
+        Save
+      </button>
+    </div>
+  );
+}
+
 export default function App() {
   const [scope, setScope]     = useState("screen");
   const [mode, setMode]       = useState("fetch");
@@ -154,9 +192,20 @@ export default function App() {
   const [appendMode, setAppendMode] = useState(false);
   const [appendText, setAppendText] = useState("");
 
+  // Test-target env config (baseUrl / dbName / userName / password) — set
+  // via the hamburger-triggered dropdown in the top bar (next to the GB
+  // logo), sent to the backend with the "set_env" action. Session scoped:
+  // openable/settable at any time, persists across runs, no fallback if
+  // unset (backend refuses "run" until this is confirmed).
+  const [envMenuOpen, setEnvMenuOpen] = useState(false);
+  const [envDraft, setEnvDraft] = useState({ baseUrl: "", dbName: "", userName: "", password: "" });
+  const [envConfirmed, setEnvConfirmed] = useState(null); // {baseUrl, dbName, userName} — no password echoed back
+
   const wsRef        = useRef(null);
   const logBoxRef    = useRef(null);
   const lineIdRef    = useRef(0);
+  const envMenuRef   = useRef(null);
+  const envTriggerRef = useRef(null);
 
   const log = (text, tone) => {
     setLines((prev) => {
@@ -170,6 +219,20 @@ export default function App() {
     if (logBoxRef.current)
       logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
   }, [lines]);
+
+  // Close the env dropdown on outside-click (multiple tab-able fields make
+  // per-input onBlur timeouts unreliable, unlike the single-input combobox
+  // pattern used elsewhere in this file).
+  useEffect(() => {
+    if (!envMenuOpen) return;
+    const handleClickOutside = (e) => {
+      if (envMenuRef.current && envMenuRef.current.contains(e.target)) return;
+      if (envTriggerRef.current && envTriggerRef.current.contains(e.target)) return;
+      setEnvMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [envMenuOpen]);
 
   useEffect(() => {
     const ws = new WebSocket(WS_URL);
@@ -230,6 +293,9 @@ export default function App() {
       } else if (msg.type === "terminated") {
         resetRun();
         setPhase("idle");
+      } else if (msg.type === "env_set") {
+        setEnvConfirmed({ baseUrl: msg.baseUrl, dbName: msg.dbName, userName: msg.userName });
+        setEnvMenuOpen(false);
       } else if (msg.type === "error") {
         log(msg.message, "danger");
         setAlert({ message: msg.message, tone: "danger" });
@@ -353,7 +419,41 @@ export default function App() {
     resetRun();
     setPhase("idle");
   };
+  const handleToggleEnvMenu = () => {
+    if (!envMenuOpen) {
+      // Opening pre-fills everything except the password (never echoed
+      // back by the backend, and not worth holding in state either) — the
+      // user only has to retype the password if they're re-editing.
+      setEnvDraft((prev) => ({
+        baseUrl:  envConfirmed?.baseUrl  ?? prev.baseUrl,
+        dbName:   envConfirmed?.dbName   ?? prev.dbName,
+        userName: envConfirmed?.userName ?? prev.userName,
+        password: "",
+      }));
+    }
+    setEnvMenuOpen((v) => !v);
+  };
+  const handleSaveEnv = () => {
+    const { baseUrl, dbName, userName, password } = envDraft;
+    if (!baseUrl.trim() || !dbName.trim() || !userName.trim() || !password) {
+      setAlert({ message: "all four fields are required — baseUrl, DB name, username, password.", tone: "danger" });
+      return;
+    }
+    send({
+      action:   "set_env",
+      baseUrl:  baseUrl.trim(),
+      dbName:   dbName.trim(),
+      userName: userName.trim(),
+      password,
+    });
+  };
+
   const handleRun      = () => {
+    if (!envConfirmed) {
+      setAlert({ message: "set your test environment (baseUrl / db / username / password) before running.", tone: "danger" });
+      setEnvMenuOpen(true);
+      return;
+    }
     setLines([]);
     setResult(null);
     setModuleResult(null);
@@ -417,6 +517,34 @@ export default function App() {
 
       <header className="topbar">
         <div className="topbar-brand">
+          <div className="topbar-env-anchor">
+            <button
+              type="button"
+              className="topbar-env-toggle"
+              onClick={handleToggleEnvMenu}
+              aria-expanded={envMenuOpen}
+              title={envConfirmed ? `${envConfirmed.baseUrl} (${envConfirmed.userName})` : "Test environment — not set"}
+              ref={envTriggerRef}
+            >
+              <span className="hamburger-icon">
+                <span />
+                <span />
+                <span />
+              </span>
+              <span
+                className="env-status-dot"
+                style={{ background: envConfirmed ? "var(--text-success)" : "var(--text-warning, #f59e0b)" }}
+              />
+            </button>
+            {envMenuOpen && (
+              <EnvMenu
+                envDraft={envDraft}
+                setEnvDraft={setEnvDraft}
+                onSave={handleSaveEnv}
+                panelRef={envMenuRef}
+              />
+            )}
+          </div>
           <div className="topbar-logo">GB</div>
           <span className="topbar-title">QC Test Console</span>
           <span className="topbar-sub">GoodBooks ERP</span>

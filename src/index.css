@@ -88,6 +88,7 @@ body {
 }
 .conn-dot {
   width: 7px; height: 7px; border-radius: 50%; display: inline-block;
+  flex: none;
 }
 
 /* ── LEFT PANEL ───────────────────────────────────────────────── */
@@ -136,6 +137,7 @@ label.field-label {
 }
 
 input[type="text"],
+input[type="password"],
 textarea {
   width: 100%;
   padding: 8px 11px;
@@ -148,12 +150,14 @@ textarea {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 input[type="text"]:focus,
+input[type="password"]:focus,
 textarea:focus {
   outline: none;
   border-color: var(--brand);
   box-shadow: 0 0 0 3px rgba(37,99,235,0.12);
 }
-input[type="text"]:disabled {
+input[type="text"]:disabled,
+input[type="password"]:disabled {
   background: var(--surface-2);
   color: var(--text-muted);
   cursor: not-allowed;
@@ -707,4 +711,75 @@ button.full { width: 100%; }
   border: none;
   width: 100%;
   background: #f9fafb;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test-environment access — hamburger icon in the top bar, positioned */
+/* immediately before the GB logo inside .topbar-brand. Opens an       */
+/* anchored dropdown panel (same visual language as .combobox-list —   */
+/* surface-1 bg, border-strong, radius-lg, floating shadow) instead of */
+/* a drawer, since the content is just 4 fields + a save button. This  */
+/* replaces the old sidebar accordion entirely — there is only one way */
+/* to reach this panel now.                                            */
+/* ------------------------------------------------------------------ */
+.topbar-env-anchor {
+  position: relative;
+}
+.topbar-env-toggle {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+  position: relative;
+}
+.topbar-env-toggle:hover {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+.hamburger-icon {
+  width: 16px;
+  height: 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.hamburger-icon span {
+  display: block;
+  width: 100%;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--text-secondary);
+}
+.env-status-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--surface-1);
+}
+.env-dropdown-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 24px rgba(15,23,42,0.12);
+  padding: 14px;
+  z-index: 30;
+}
+.env-dropdown-save {
+  margin-top: 2px;
 }
