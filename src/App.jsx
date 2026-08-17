@@ -61,7 +61,56 @@ function parseFeature(text) {
   return { header: header.join("\n"), scenarios };
 }
 
-function FeatureFileView({ text }) {
+// ------------------------------------------------------------------
+// Scenario <-> run-log correlation (main review panel only)
+//
+// A scenario's log "prefix" is its title text up to the first
+// "<placeholder>" (Scenario Outlines write the title once with a
+// placeholder, but cypress-cucumber expands it once per Examples row,
+// so several distinct log lines all start with the same prefix). Plain
+// Scenario: blocks have no placeholder, so the whole title is the
+// prefix and it naturally matches exactly one line.
+// ------------------------------------------------------------------
+function scenarioLogPrefix(title) {
+  let t = (title || "").replace(/^Scenario( Outline)?:\s*/, "");
+  const placeholderIdx = t.indexOf("<");
+  if (placeholderIdx !== -1) t = t.slice(0, placeholderIdx);
+  return t.trim();
+}
+
+const LEADING_GLYPH_OR_NUM_RE = /^\s*(?:[✓✗√×]\s*|\d+\)\s*)/;
+const ENTRY_START_RE = /^\s*(?:[✓✗√×]|\d+\))/;
+const BOUNDARY_RE = /^\s*(?:===|\(Results|\[mochawesome|\(Screenshots|\(Run Finished|\d+\s+(?:passing|failing|pending))/;
+
+// Returns the Set of log-line ids that correspond to a given scenario
+// title, for one scenario. Handles all three shapes seen in real runs:
+//   - passing line:            "✓ <title> (1234ms)"                → 1 line
+//   - failing short summary:   "N) <title>"                        → 1 line
+//   - failing detailed block:  "N) <suite>" then "<title>:" then a
+//                               multi-line stack trace              → block
+function matchScenarioLines(prefix, lines) {
+  const ids = new Set();
+  if (!prefix) return ids;
+  let collecting = false;
+  for (const l of lines) {
+    const withoutGlyph = l.text.replace(LEADING_GLYPH_OR_NUM_RE, "");
+    if (withoutGlyph.startsWith(prefix)) {
+      ids.add(l.id);
+      collecting = true;
+      continue;
+    }
+    if (collecting) {
+      if (ENTRY_START_RE.test(l.text) || BOUNDARY_RE.test(l.text)) {
+        collecting = false;
+      } else {
+        ids.add(l.id);
+      }
+    }
+  }
+  return ids;
+}
+
+function FeatureFileView({ text, onOpenScenariosChange }) {
   const { header, scenarios } = useMemo(() => parseFeature(text), [text]);
   const [openSet, setOpenSet] = useState(() => new Set());
 
@@ -73,6 +122,19 @@ function FeatureFileView({ text }) {
       return next;
     });
   };
+
+  // Report which scenario titles are currently expanded, so the parent
+  // can correlate them against the run log. Only wired up where this
+  // component is used in the main review panel — the conflict-preview
+  // usage doesn't pass this prop, so it has no effect there.
+  useEffect(() => {
+    if (!onOpenScenariosChange) return;
+    const titles = Array.from(openSet)
+      .map((idx) => scenarios[idx]?.title)
+      .filter(Boolean);
+    onOpenScenariosChange(titles);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openSet, scenarios]);
 
   if (scenarios.length === 0) {
     return <pre>{text}</pre>;
@@ -192,6 +254,11 @@ export default function App() {
   const [appendMode, setAppendMode] = useState(false);
   const [appendText, setAppendText] = useState("");
 
+  // Which scenario title(s) are currently expanded in the main review
+  // panel's FeatureFileView — drives which run-log lines get highlighted.
+  // Not touched by the conflict-preview panel (it never calls the setter).
+  const [openScenarios, setOpenScenarios] = useState([]);
+
   // Test-target env config (baseUrl / dbName / userName / password) — set
   // via the hamburger-triggered dropdown in the top bar (next to the GB
   // logo), sent to the backend with the "set_env" action. Session scoped:
@@ -219,6 +286,30 @@ export default function App() {
     if (logBoxRef.current)
       logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
   }, [lines]);
+
+  // Highlighted log-line ids: union of matches across every scenario
+  // currently expanded in the main review panel. Recomputed whenever the
+  // set of open scenarios changes or new log lines arrive.
+  const highlightedLineIds = useMemo(() => {
+    const ids = new Set();
+    if (!openScenarios.length || !lines.length) return ids;
+    for (const title of openScenarios) {
+      const prefix = scenarioLogPrefix(title);
+      matchScenarioLines(prefix, lines).forEach((id) => ids.add(id));
+    }
+    return ids;
+  }, [openScenarios, lines]);
+
+  // Auto-scroll to the first highlighted line when the open-scenario set
+  // changes (i.e. on click), not on every incoming log line — the normal
+  // "stick to bottom while streaming" effect above already owns that case.
+  useEffect(() => {
+    if (!openScenarios.length) return;
+    if (!logBoxRef.current) return;
+    const el = logBoxRef.current.querySelector(".term-line.highlighted");
+    if (el) el.scrollIntoView({ block: "center" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openScenarios]);
 
   // Close the env dropdown on outside-click (multiple tab-able fields make
   // per-input onBlur timeouts unreliable, unlike the single-input combobox
@@ -329,6 +420,7 @@ export default function App() {
     setEdits({});
     setPreview(null);
     setReportAvailable(false);
+    setOpenScenarios([]);
   };
 
   const handleFetch = () => {
@@ -458,6 +550,7 @@ export default function App() {
     setResult(null);
     setModuleResult(null);
     setReportAvailable(false);
+    setOpenScenarios([]);
     send({ action: "run" });
   };
   const handleReport      = () => send({ action: "report" });
@@ -490,6 +583,9 @@ export default function App() {
   const showLog      = lines.length > 0 || phase === "resolving" || phase === "running" || phase === "done";
   const busy         = phase === "resolving" || phase === "running";
   const showConflict = !!conflict && phase === "awaiting_conflict";
+  // Highlighting only makes sense once a run has actually finished and the
+  // log below the feature file reflects that run.
+  const logReadyForHighlight = phase === "done" && !busy;
 
   return (
     <>
@@ -864,7 +960,11 @@ export default function App() {
                         onCancel={() => cancelEdit(featureKey)}
                       />
                     ) : (
-                      <FeatureFileView key={featureText} text={featureText} />
+                      <FeatureFileView
+                        key={featureText}
+                        text={featureText}
+                        onOpenScenariosChange={logReadyForHighlight ? setOpenScenarios : undefined}
+                      />
                     )}
                   </div>
                   <div className="sxs-panel">
@@ -964,7 +1064,7 @@ export default function App() {
               )}
               {lines.map((l) => (
                 <div key={l.id}
-                  className={`term-line${TABLE_RE.test(l.text) ? " is-table" : ""}`}
+                  className={`term-line${TABLE_RE.test(l.text) ? " is-table" : ""}${highlightedLineIds.has(l.id) ? " highlighted" : ""}`}
                   style={{ color: TERM_TONE[l.tone] || TERM_TONE.secondary }}>
                   {l.text}
                 </div>

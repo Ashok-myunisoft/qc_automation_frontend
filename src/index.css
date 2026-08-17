@@ -460,6 +460,13 @@ button.full { width: 100%; }
 }
 .term-line { word-break: break-word; }
 .term-line.is-table { white-space: pre; word-break: normal; }
+.term-line.highlighted {
+  background: rgba(96, 165, 250, 0.16);
+  border-left: 2px solid #60a5fa;
+  padding-left: 8px;
+  margin-left: -10px;
+  border-radius: 3px;
+}
 .term-toggle {
   height: 28px;
   padding: 0 12px;
