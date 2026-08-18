@@ -722,16 +722,12 @@ button.full { width: 100%; }
 
 /* ------------------------------------------------------------------ */
 /* Test-environment access — hamburger icon in the top bar, positioned */
-/* immediately before the GB logo inside .topbar-brand. Opens an       */
-/* anchored dropdown panel (same visual language as .combobox-list —   */
-/* surface-1 bg, border-strong, radius-lg, floating shadow) instead of */
-/* a drawer, since the content is just 4 fields + a save button. This  */
-/* replaces the old sidebar accordion entirely — there is only one way */
-/* to reach this panel now.                                            */
+/* immediately before the GB logo inside .topbar-brand. Opens a        */
+/* full-height panel that slides in from the left edge over a dimmed   */
+/* backdrop (same pattern as a standard app sidebar/drawer), rather    */
+/* than a small anchored dropdown card. Replaces the old sidebar       */
+/* accordion — there is only one way to reach this panel now.          */
 /* ------------------------------------------------------------------ */
-.topbar-env-anchor {
-  position: relative;
-}
 .topbar-env-toggle {
   width: 32px;
   height: 32px;
@@ -772,21 +768,58 @@ button.full { width: 100%; }
   border-radius: 50%;
   border: 1.5px solid var(--surface-1);
 }
-.env-dropdown-panel {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  width: 260px;
+
+.env-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  z-index: 200;
+  display: flex;
+}
+.env-drawer-panel {
+  width: 320px;
+  max-width: 85vw;
+  height: 100%;
+  background: var(--surface-1);
+  border-right: 1px solid var(--border);
+  box-shadow: 12px 0 32px rgba(15,23,42,0.18);
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  background: var(--surface-1);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  box-shadow: 0 8px 24px rgba(15,23,42,0.12);
-  padding: 14px;
-  z-index: 30;
+  animation: env-drawer-slide-in 0.18s ease-out;
 }
-.env-dropdown-save {
-  margin-top: 2px;
+@keyframes env-drawer-slide-in {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(0); }
+}
+.env-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.env-drawer-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.env-drawer-close {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+}
+.env-drawer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  overflow-y: auto;
+}
+.env-drawer-save {
+  margin-top: 4px;
 }

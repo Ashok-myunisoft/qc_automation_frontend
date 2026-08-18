@@ -186,40 +186,50 @@ function PanelEditor({ initialText, onSave, onCancel }) {
   );
 }
 
-// Dropdown panel for the test-target env config (baseUrl / dbName /
-// userName / password). Opened from the hamburger icon in the top bar
-// (next to the GB logo) rather than living inline in the sidebar. Anchored
-// under the trigger, closes on outside-click or after a successful save.
-function EnvMenu({ envDraft, setEnvDraft, onSave, panelRef }) {
+// Full-height slide-in panel for the test-target env config (baseUrl /
+// dbName / userName / password). Opened from the hamburger icon in the
+// top bar — slides in from the left edge over a dimmed backdrop (same
+// pattern as Claude's own sidebar), rather than floating as a small
+// anchored dropdown card. Closes on backdrop click, the close button,
+// or after a successful save.
+function EnvDrawer({ envDraft, setEnvDraft, onSave, onClose }) {
   return (
-    <div className="env-dropdown-panel" ref={panelRef}>
-      <div>
-        <label className="field-label">Base URL</label>
-        <input type="text"
-          value={envDraft.baseUrl}
-          onChange={(e) => setEnvDraft((d) => ({ ...d, baseUrl: e.target.value }))} />
+    <div className="env-drawer-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="env-drawer-panel">
+        <div className="env-drawer-header">
+          <span className="env-drawer-title">Test environment</span>
+          <button type="button" className="secondary env-drawer-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="env-drawer-body">
+          <div>
+            <label className="field-label">Base URL</label>
+            <input type="text"
+              value={envDraft.baseUrl}
+              onChange={(e) => setEnvDraft((d) => ({ ...d, baseUrl: e.target.value }))} />
+          </div>
+          <div>
+            <label className="field-label">Database name</label>
+            <input type="text"
+              value={envDraft.dbName}
+              onChange={(e) => setEnvDraft((d) => ({ ...d, dbName: e.target.value }))} />
+          </div>
+          <div>
+            <label className="field-label">Username</label>
+            <input type="text"
+              value={envDraft.userName}
+              onChange={(e) => setEnvDraft((d) => ({ ...d, userName: e.target.value }))} />
+          </div>
+          <div>
+            <label className="field-label">Password</label>
+            <input type="password"
+              value={envDraft.password}
+              onChange={(e) => setEnvDraft((d) => ({ ...d, password: e.target.value }))} />
+          </div>
+          <button className="primary full env-drawer-save" onClick={onSave}>
+            Save
+          </button>
+        </div>
       </div>
-      <div>
-        <label className="field-label">Database name</label>
-        <input type="text"
-          value={envDraft.dbName}
-          onChange={(e) => setEnvDraft((d) => ({ ...d, dbName: e.target.value }))} />
-      </div>
-      <div>
-        <label className="field-label">Username</label>
-        <input type="text"
-          value={envDraft.userName}
-          onChange={(e) => setEnvDraft((d) => ({ ...d, userName: e.target.value }))} />
-      </div>
-      <div>
-        <label className="field-label">Password</label>
-        <input type="password"
-          value={envDraft.password}
-          onChange={(e) => setEnvDraft((d) => ({ ...d, password: e.target.value }))} />
-      </div>
-      <button className="primary full env-dropdown-save" onClick={onSave}>
-        Save
-      </button>
     </div>
   );
 }
@@ -260,10 +270,10 @@ export default function App() {
   const [openScenarios, setOpenScenarios] = useState([]);
 
   // Test-target env config (baseUrl / dbName / userName / password) — set
-  // via the hamburger-triggered dropdown in the top bar (next to the GB
-  // logo), sent to the backend with the "set_env" action. Session scoped:
-  // openable/settable at any time, persists across runs, no fallback if
-  // unset (backend refuses "run" until this is confirmed).
+  // via the hamburger-triggered slide-in drawer, sent to the backend with
+  // the "set_env" action. Session scoped: openable/settable at any time,
+  // persists across runs, no fallback if unset (backend refuses "run"
+  // until this is confirmed).
   const [envMenuOpen, setEnvMenuOpen] = useState(false);
   const [envDraft, setEnvDraft] = useState({ baseUrl: "", dbName: "", userName: "", password: "" });
   const [envConfirmed, setEnvConfirmed] = useState(null); // {baseUrl, dbName, userName} — no password echoed back
@@ -271,8 +281,6 @@ export default function App() {
   const wsRef        = useRef(null);
   const logBoxRef    = useRef(null);
   const lineIdRef    = useRef(0);
-  const envMenuRef   = useRef(null);
-  const envTriggerRef = useRef(null);
 
   const log = (text, tone) => {
     setLines((prev) => {
@@ -310,20 +318,6 @@ export default function App() {
     if (el) el.scrollIntoView({ block: "center" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openScenarios]);
-
-  // Close the env dropdown on outside-click (multiple tab-able fields make
-  // per-input onBlur timeouts unreliable, unlike the single-input combobox
-  // pattern used elsewhere in this file).
-  useEffect(() => {
-    if (!envMenuOpen) return;
-    const handleClickOutside = (e) => {
-      if (envMenuRef.current && envMenuRef.current.contains(e.target)) return;
-      if (envTriggerRef.current && envTriggerRef.current.contains(e.target)) return;
-      setEnvMenuOpen(false);
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [envMenuOpen]);
 
   useEffect(() => {
     const ws = new WebSocket(WS_URL);
@@ -611,36 +605,34 @@ export default function App() {
         </div>
       )}
 
+      {envMenuOpen && (
+        <EnvDrawer
+          envDraft={envDraft}
+          setEnvDraft={setEnvDraft}
+          onSave={handleSaveEnv}
+          onClose={() => setEnvMenuOpen(false)}
+        />
+      )}
+
       <header className="topbar">
         <div className="topbar-brand">
-          <div className="topbar-env-anchor">
-            <button
-              type="button"
-              className="topbar-env-toggle"
-              onClick={handleToggleEnvMenu}
-              aria-expanded={envMenuOpen}
-              title={envConfirmed ? `${envConfirmed.baseUrl} (${envConfirmed.userName})` : "Test environment — not set"}
-              ref={envTriggerRef}
-            >
-              <span className="hamburger-icon">
-                <span />
-                <span />
-                <span />
-              </span>
-              <span
-                className="env-status-dot"
-                style={{ background: envConfirmed ? "var(--text-success)" : "var(--text-warning, #f59e0b)" }}
-              />
-            </button>
-            {envMenuOpen && (
-              <EnvMenu
-                envDraft={envDraft}
-                setEnvDraft={setEnvDraft}
-                onSave={handleSaveEnv}
-                panelRef={envMenuRef}
-              />
-            )}
-          </div>
+          <button
+            type="button"
+            className="topbar-env-toggle"
+            onClick={handleToggleEnvMenu}
+            aria-expanded={envMenuOpen}
+            title={envConfirmed ? `${envConfirmed.baseUrl} (${envConfirmed.userName})` : "Test environment — not set"}
+          >
+            <span className="hamburger-icon">
+              <span />
+              <span />
+              <span />
+            </span>
+            <span
+              className="env-status-dot"
+              style={{ background: envConfirmed ? "var(--text-success)" : "var(--text-warning, #f59e0b)" }}
+            />
+          </button>
           <div className="topbar-logo">GB</div>
           <span className="topbar-title">QC Test Console</span>
           <span className="topbar-sub">GoodBooks ERP</span>
