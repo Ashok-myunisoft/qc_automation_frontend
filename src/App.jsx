@@ -381,6 +381,11 @@ export default function App() {
       } else if (msg.type === "env_set") {
         setEnvConfirmed({ baseUrl: msg.baseUrl, dbName: msg.dbName, userName: msg.userName });
         setEnvMenuOpen(false);
+        // Clear the "set your test environment..." warning that Run may
+        // have put up earlier in this session — it's now resolved, and
+        // otherwise it sits there indefinitely, unrelated to whatever
+        // happens next (including an in-progress or already-finished run).
+        setAlert(null);
       } else if (msg.type === "error") {
         log(msg.message, "danger");
         setAlert({ message: msg.message, tone: "danger" });
