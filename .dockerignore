@@ -1,0 +1,22 @@
+# Source-control and editor files
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+
+# Dependencies and build output
+node_modules/
+dist/
+
+# Environment and logs
+.env
+.env.*
+!.env.example
+*.log
+npm-debug.log*
+
+# Docker files are not needed in the build context
+Dockerfile
+docker-compose.yml
+compose.yml
