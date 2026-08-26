@@ -9,6 +9,8 @@ const PHASE_LABELS = {
   awaiting_review:    { label: "Ready to run",       tone: "warning"  },
   awaiting_approval:  { label: "Awaiting approval",  tone: "warning"  },
   awaiting_conflict:  { label: "Needs a decision",   tone: "warning"  },
+  awaiting_sweep_confirm: { label: "Ready to sweep", tone: "warning"  },
+  sweeping:           { label: "Sweeping (unattended)", tone: "accent" },
   not_found:          { label: "Not found",          tone: "danger"   },
   done:               { label: "Done",               tone: "success"  },
 };
@@ -63,13 +65,6 @@ function parseFeature(text) {
 
 // ------------------------------------------------------------------
 // Scenario <-> run-log correlation (main review panel only)
-//
-// A scenario's log "prefix" is its title text up to the first
-// "<placeholder>" (Scenario Outlines write the title once with a
-// placeholder, but cypress-cucumber expands it once per Examples row,
-// so several distinct log lines all start with the same prefix). Plain
-// Scenario: blocks have no placeholder, so the whole title is the
-// prefix and it naturally matches exactly one line.
 // ------------------------------------------------------------------
 function scenarioLogPrefix(title) {
   let t = (title || "").replace(/^Scenario( Outline)?:\s*/, "");
@@ -82,12 +77,6 @@ const LEADING_GLYPH_OR_NUM_RE = /^\s*(?:[✓✗√×]\s*|\d+\)\s*)/;
 const ENTRY_START_RE = /^\s*(?:[✓✗√×]|\d+\))/;
 const BOUNDARY_RE = /^\s*(?:===|\(Results|\[mochawesome|\(Screenshots|\(Run Finished|\d+\s+(?:passing|failing|pending))/;
 
-// Returns the Set of log-line ids that correspond to a given scenario
-// title, for one scenario. Handles all three shapes seen in real runs:
-//   - passing line:            "✓ <title> (1234ms)"                → 1 line
-//   - failing short summary:   "N) <title>"                        → 1 line
-//   - failing detailed block:  "N) <suite>" then "<title>:" then a
-//                               multi-line stack trace              → block
 function matchScenarioLines(prefix, lines) {
   const ids = new Set();
   if (!prefix) return ids;
@@ -123,10 +112,6 @@ function FeatureFileView({ text, onOpenScenariosChange }) {
     });
   };
 
-  // Report which scenario titles are currently expanded, so the parent
-  // can correlate them against the run log. Only wired up where this
-  // component is used in the main review panel — the conflict-preview
-  // usage doesn't pass this prop, so it has no effect there.
   useEffect(() => {
     if (!onOpenScenariosChange) return;
     const titles = Array.from(openSet)
@@ -186,12 +171,6 @@ function PanelEditor({ initialText, onSave, onCancel }) {
   );
 }
 
-// Full-height slide-in panel for the test-target env config (baseUrl /
-// dbName / userName / password). Opened from the hamburger icon in the
-// top bar — slides in from the left edge over a dimmed backdrop (same
-// pattern as Claude's own sidebar), rather than floating as a small
-// anchored dropdown card. Closes on backdrop click, the close button,
-// or after a successful save.
 function EnvDrawer({ envDraft, setEnvDraft, onSave, onClose }) {
   return (
     <div className="env-drawer-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -259,24 +238,29 @@ export default function App() {
   const [screenQuery, setScreenQuery] = useState("");
   const [screenDropdownOpen, setScreenDropdownOpen] = useState(false);
 
+  // Multi-module queue (Whole module scope only).
+  const [moduleChips, setModuleChips] = useState([]);
+  const [chipDraft, setChipDraft] = useState("");
+
+  // Discovery summary shown before an unattended sweep starts — per
+  // module breakdown of how many screens exist / are new, gathered by
+  // the "discover" backend action before anything is generated.
+  const [sweepDiscovery, setSweepDiscovery] = useState(null); // {modules:[{module,total,new,existing,screens:[{name,existing}]}], grand:{total,new,existing}} | null
+  const [sweepAppendMode, setSweepAppendMode] = useState(false);
+  const [sweepAppendText, setSweepAppendText] = useState("");
+
+  const queueRef = useRef({ active: false, queue: [], index: 0, action: null, screensCount: 0 });
+
   const [conflict, setConflict]   = useState(null);
   const [conflictPreview, setConflictPreview] = useState(0);
   const [appendMode, setAppendMode] = useState(false);
   const [appendText, setAppendText] = useState("");
 
-  // Which scenario title(s) are currently expanded in the main review
-  // panel's FeatureFileView — drives which run-log lines get highlighted.
-  // Not touched by the conflict-preview panel (it never calls the setter).
   const [openScenarios, setOpenScenarios] = useState([]);
 
-  // Test-target env config (baseUrl / dbName / userName / password) — set
-  // via the hamburger-triggered slide-in drawer, sent to the backend with
-  // the "set_env" action. Session scoped: openable/settable at any time,
-  // persists across runs, no fallback if unset (backend refuses "run"
-  // until this is confirmed).
   const [envMenuOpen, setEnvMenuOpen] = useState(false);
   const [envDraft, setEnvDraft] = useState({ baseUrl: "", dbName: "", userName: "", password: "" });
-  const [envConfirmed, setEnvConfirmed] = useState(null); // {baseUrl, dbName, userName} — no password echoed back
+  const [envConfirmed, setEnvConfirmed] = useState(null);
 
   const wsRef        = useRef(null);
   const logBoxRef    = useRef(null);
@@ -295,9 +279,6 @@ export default function App() {
       logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
   }, [lines]);
 
-  // Highlighted log-line ids: union of matches across every scenario
-  // currently expanded in the main review panel. Recomputed whenever the
-  // set of open scenarios changes or new log lines arrive.
   const highlightedLineIds = useMemo(() => {
     const ids = new Set();
     if (!openScenarios.length || !lines.length) return ids;
@@ -308,9 +289,6 @@ export default function App() {
     return ids;
   }, [openScenarios, lines]);
 
-  // Auto-scroll to the first highlighted line when the open-scenario set
-  // changes (i.e. on click), not on every incoming log line — the normal
-  // "stick to bottom while streaming" effect above already owns that case.
   useEffect(() => {
     if (!openScenarios.length) return;
     if (!logBoxRef.current) return;
@@ -332,11 +310,18 @@ export default function App() {
       } else if (msg.type === "status") {
         setPhase(msg.phase);
         if (msg.phase !== "done") setResult(null);
+      } else if (msg.type === "discovery") {
+        // Per-module breakdown before an unattended sweep — gate on this
+        // instead of generating anything yet.
+        setSweepDiscovery(msg);
+        setPhase("awaiting_sweep_confirm");
       } else if (msg.type === "artifacts") {
         setArtifacts(msg);
         setSelectedScreen(0);
         setConflict(null);
       } else if (msg.type === "conflict") {
+        // Only used by single-screen generate now — module-scope sweeps
+        // never pause on conflicts (auto-replace, see "discover"/"start_sweep").
         setConflict(msg);
         setConflictPreview(0);
         setAppendMode(false);
@@ -381,10 +366,6 @@ export default function App() {
       } else if (msg.type === "env_set") {
         setEnvConfirmed({ baseUrl: msg.baseUrl, dbName: msg.dbName, userName: msg.userName });
         setEnvMenuOpen(false);
-        // Clear the "set your test environment..." warning that Run may
-        // have put up earlier in this session — it's now resolved, and
-        // otherwise it sits there indefinitely, unrelated to whatever
-        // happens next (including an in-progress or already-finished run).
         setAlert(null);
       } else if (msg.type === "error") {
         log(msg.message, "danger");
@@ -401,6 +382,22 @@ export default function App() {
     }
     setAlert({ message: "Not connected to the backend — is uvicorn running?", tone: "danger" });
     return false;
+  };
+
+  const addModuleChip = () => {
+    const v = chipDraft.trim();
+    if (!v) return;
+    setModuleChips((prev) => (prev.includes(v) ? prev : [...prev, v]));
+    setChipDraft("");
+  };
+  const removeModuleChip = (v) => setModuleChips((prev) => prev.filter((m) => m !== v));
+  const handleChipInputKeyDown = (e) => {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      addModuleChip();
+    } else if (e.key === "Backspace" && !chipDraft && moduleChips.length > 0) {
+      setModuleChips((prev) => prev.slice(0, -1));
+    }
   };
 
   const resetRun = () => {
@@ -420,6 +417,83 @@ export default function App() {
     setPreview(null);
     setReportAvailable(false);
     setOpenScenarios([]);
+    setSweepDiscovery(null);
+    setSweepAppendMode(false);
+    setSweepAppendText("");
+    queueRef.current = { active: false, queue: [], index: 0, action: null, screensCount: 0 };
+  };
+
+  const currentModuleList = () =>
+    moduleChips.length ? moduleChips : (moduleName.trim() ? [moduleName.trim()] : []);
+
+  // ------------------------------------------------------------------
+  // Whole-module FETCH — unchanged: just reads existing files, no
+  // conflicts possible, so it can go straight through without a
+  // discovery/confirm step.
+  // ------------------------------------------------------------------
+  const handleFetchModuleQueue = () => {
+    const list = currentModuleList();
+    if (!list.length) {
+      setAlert({ message: "add at least one module.", tone: "danger" });
+      return;
+    }
+    resetRun();
+    const sent = send({ action: "fetch_module_queue", modules: list });
+    if (sent) {
+      setPhase("resolving");
+      log(`fetching ${list.length} module(s)...`, "secondary");
+    }
+  };
+
+  // ------------------------------------------------------------------
+  // Whole-module GENERATE — new two-step unattended flow:
+  //   1) "discover": resolve every screen across every queued module and
+  //      report a per-module new/existing breakdown. Nothing is
+  //      generated yet.
+  //   2) user reviews the breakdown and clicks "Start sweep" once, which
+  //      fires "start_sweep" — a single unattended run across every
+  //      module/screen, auto-replacing conflicts with no per-screen
+  //      pause. Ends in one merged preview list.
+  // ------------------------------------------------------------------
+  const handleDiscoverModuleQueue = () => {
+    const list = currentModuleList();
+    if (!list.length) {
+      setAlert({ message: "add at least one module.", tone: "danger" });
+      return;
+    }
+    resetRun();
+    const sent = send({ action: "discover", modules: list, request: userRequest });
+    if (sent) {
+      setPhase("resolving");
+      log(`checking ${list.length} module(s) for existing vs new screens...`, "secondary");
+    }
+  };
+
+  // decision: "replace" | "append". For append, appendInstruction is the
+  // single instruction applied to every existing (conflicting) screen in
+  // the sweep — new screens are generated fresh either way.
+  const handleStartSweep = (decision, appendInstruction) => {
+    setSweepDiscovery(null);
+    setSweepAppendMode(false);
+    setSweepAppendText("");
+    setLines([]);
+    setPhase("sweeping");
+    log(
+      decision === "append"
+        ? "starting unattended sweep — appending to existing screens, generating new ones, no per-screen prompts..."
+        : "starting unattended sweep — this will run start to finish with no per-screen prompts...",
+      "secondary",
+    );
+    send({ action: "start_sweep", decision, append_request: appendInstruction || undefined });
+  };
+
+  const handleCancelSweep = () => {
+    setSweepDiscovery(null);
+    setSweepAppendMode(false);
+    setSweepAppendText("");
+    send({ action: "reject" });
+    resetRun();
+    setPhase("idle");
   };
 
   const handleFetch = () => {
@@ -450,44 +524,49 @@ export default function App() {
     });
     if (sent) {
       setPhase("resolving");
-      // Neutral, scope-agnostic — just proof of life the instant you click,
-      // replaced within moments by the real backend log lines in whatever
-      // order they actually happen (no hardcoded assumption about which
-      // repo gets checked first, so this can't drift out of sync again).
       log("sending request...", "secondary");
     }
   };
 
+  // Approve & Push is now PER SCREEN in module scope — pushes only the
+  // currently-selected screen (identified by module + moduleIndex),
+  // not the whole module batch.
   const handleApprove = () => {
     const payload = { action: "approve" };
     if (artifacts?.scope === "module" && artifacts?.screens) {
-      const bundle = [];
-      artifacts.screens.forEach((_, i) => {
-        const f = edits[`${i}:feature`];
-        const s = edits[`${i}:script`];
-        if (typeof f === "string" || typeof s === "string") {
-          bundle.push({
-            index: i,
-            ...(typeof f === "string" ? { feature: f } : {}),
-            ...(typeof s === "string" ? { script:  s } : {}),
-          });
-        }
-      });
-      if (bundle.length) payload.edits = bundle;
+      const current = artifacts.screens[selectedScreen];
+      if (!current) return;
+      payload.module = current.module;
+      payload.index  = current.moduleIndex;
+      const f  = edits[`${selectedScreen}:feature`];
+      const sc = edits[`${selectedScreen}:script`];
+      if (typeof f === "string") payload.feature = f;
+      if (typeof sc === "string") payload.script  = sc;
     } else {
       if (typeof edits["0:feature"] === "string") payload.feature = edits["0:feature"];
       if (typeof edits["0:script"]  === "string") payload.script  = edits["0:script"];
     }
     send(payload);
   };
-  const handleReject   = () => { resetRun(); send({ action: "reject" }); };
+  // Top-right bulk actions — act on every screen in the merged list,
+  // regardless of which one is currently selected.
+  const handleApproveAll = () => send({ action: "approve_all" });
+  const handleRejectAll  = () => { resetRun(); send({ action: "reject" }); };
+
+  // Bottom per-screen reject — drops only the currently selected screen
+  // from the merged list, leaving the rest untouched.
+  const handleRejectScreen = () => {
+    if (artifacts?.scope === "module" && artifacts?.screens) {
+      const current = artifacts.screens[selectedScreen];
+      if (!current) return;
+      send({ action: "reject_screen", module: current.module, index: current.moduleIndex });
+    } else {
+      resetRun();
+      send({ action: "reject" });
+    }
+  };
 
   const handleReplace = () => {
-    // Instant feedback on click, same pattern as handleFetch/handleGenerate —
-    // without this, phase stayed whatever it was (not "resolving") until the
-    // backend's own status message round-tripped back, so Terminate wouldn't
-    // show and the log panel just sat frozen on the pre-conflict lines in
-    // the meantime, looking hung even when it was actually working.
     setLines([]);
     setPhase("resolving");
     log("sending request...", "secondary");
@@ -496,7 +575,6 @@ export default function App() {
   };
   const handleConfirmAppend = () => {
     if (!appendText.trim()) return;
-    // Same fix as handleReplace, for the Append path.
     setLines([]);
     setPhase("resolving");
     log("sending request...", "secondary");
@@ -512,9 +590,6 @@ export default function App() {
   };
   const handleToggleEnvMenu = () => {
     if (!envMenuOpen) {
-      // Opening pre-fills everything except the password (never echoed
-      // back by the backend, and not worth holding in state either) — the
-      // user only has to retype the password if they're re-editing.
       setEnvDraft((prev) => ({
         baseUrl:  envConfirmed?.baseUrl  ?? prev.baseUrl,
         dbName:   envConfirmed?.dbName   ?? prev.dbName,
@@ -579,11 +654,10 @@ export default function App() {
   );
   const canRun       = hasArtifacts && phase === "awaiting_review";
   const canApprove   = hasArtifacts && phase === "awaiting_approval";
-  const showLog      = lines.length > 0 || phase === "resolving" || phase === "running" || phase === "done";
-  const busy         = phase === "resolving" || phase === "running";
+  const showLog      = lines.length > 0 || phase === "resolving" || phase === "running" || phase === "sweeping" || phase === "done";
+  const busy         = phase === "resolving" || phase === "running" || phase === "sweeping";
   const showConflict = !!conflict && phase === "awaiting_conflict";
-  // Highlighting only makes sense once a run has actually finished and the
-  // log below the feature file reflects that run.
+  const showSweepConfirm = !!sweepDiscovery && phase === "awaiting_sweep_confirm";
   const logReadyForHighlight = phase === "done" && !busy;
 
   return (
@@ -592,9 +666,7 @@ export default function App() {
         <div className="preview-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setPreview(null); }}>
           <div className="preview-frame">
             <div className="preview-header">
-              <div className="preview-title">
-                Screenshots — preview
-              </div>
+              <div className="preview-title">Screenshots — preview</div>
               <div className="preview-actions">
                 <button className="secondary" onClick={handleDownloadPreview}>⬇ Download</button>
                 <button className="secondary" onClick={() => setPreview(null)}>✕ Close</button>
@@ -668,13 +740,65 @@ export default function App() {
         </div>
 
         <div>
-          <p className="card-title">{scope === "module" ? "Module" : "Screen"}</p>
+          <p className="card-title">{scope === "module" ? "Module(s)" : "Screen"}</p>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <div>
-              <label className="field-label">Module</label>
-              <input type="text" placeholder="e.g. Finance" value={moduleName}
-                onChange={(e) => setModuleName(e.target.value)} disabled={busy} />
-            </div>
+            {scope === "module" ? (
+              <div>
+                <label className="field-label">
+                  Modules {moduleChips.length > 0 ? `(${moduleChips.length} queued)` : ""}
+                </label>
+                {/* Input box holds ONLY the text field now. Chips render
+                    in a separate block below it, stacked vertically —
+                    one per line — instead of wrapping inside the box. */}
+                <input
+                  type="text"
+                  placeholder="e.g. Finance — press Enter"
+                  value={chipDraft}
+                  onChange={(e) => setChipDraft(e.target.value)}
+                  onKeyDown={handleChipInputKeyDown}
+                  onBlur={addModuleChip}
+                  disabled={busy}
+                />
+                {moduleChips.length > 0 && (
+                  <div
+                    style={{
+                      display: "flex", flexDirection: "column", gap: 6, marginTop: 8,
+                    }}
+                  >
+                    {moduleChips.map((m) => (
+                      <span
+                        key={m}
+                        style={{
+                          display: "flex", alignItems: "center", justifyContent: "space-between",
+                          background: "var(--surface-3)", color: "var(--text-primary)", borderRadius: "var(--radius)",
+                          padding: "6px 10px", fontSize: 13,
+                        }}
+                      >
+                        {m}
+                        <button
+                          type="button"
+                          onClick={() => removeModuleChip(m)}
+                          disabled={busy}
+                          aria-label={`remove ${m}`}
+                          style={{
+                            border: "none", background: "transparent", color: "var(--text-muted)",
+                            cursor: busy ? "not-allowed" : "pointer", fontSize: 15, lineHeight: 1, padding: 0,
+                          }}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div>
+                <label className="field-label">Module</label>
+                <input type="text" placeholder="e.g. Finance" value={moduleName}
+                  onChange={(e) => setModuleName(e.target.value)} disabled={busy} />
+              </div>
+            )}
             {scope === "screen" && (
               <div>
                 <label className="field-label">Screen</label>
@@ -701,7 +825,11 @@ export default function App() {
           </div>
 
           {mode === "fetch" ? (
-            <button className="primary full" onClick={handleFetch} disabled={busy}>
+            <button
+              className="primary full"
+              onClick={scope === "module" ? handleFetchModuleQueue : handleFetch}
+              disabled={busy}
+            >
               ▶ Fetch
             </button>
           ) : (
@@ -712,8 +840,11 @@ export default function App() {
                   onChange={(e) => setUserRequest(e.target.value)} disabled={busy} />
               </div>
 
-              <button className="primary full" onClick={handleGenerate}
-                disabled={busy}>
+              <button
+                className="primary full"
+                onClick={scope === "module" ? handleDiscoverModuleQueue : handleGenerate}
+                disabled={busy}
+              >
                 ✦ Generate
               </button>
             </div>
@@ -746,46 +877,104 @@ export default function App() {
 
       <main className="right-panel">
 
-        {!hasArtifacts && !showLog && !showConflict && (
+        {!hasArtifacts && !showLog && !showConflict && !showSweepConfirm && (
           <div className="empty-state">
             <div className="empty-state-icon">🔍</div>
             <p>Fetch an existing screen to review its test files,<br />or generate new tests from source code.</p>
           </div>
         )}
 
+        {showSweepConfirm && (
+          <div>
+            <div className="section-header">
+              <span className="section-title">
+                {sweepDiscovery.grand.total} screen(s) across {sweepDiscovery.modules.length} module(s) —
+                {" "}{sweepDiscovery.grand.existing} already have tests
+              </span>
+              {phaseInfo && <Badge tone={phaseInfo.tone}>{phaseInfo.label}</Badge>}
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
+              {sweepDiscovery.modules.map((m) => (
+                <div key={m.module} className="module-summary-row"
+                  style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    padding: "8px 12px", background: "var(--surface-2)", borderRadius: "var(--radius)",
+                  }}>
+                  <span>{m.module}</span>
+                  <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                    {m.total} screen(s) — {m.new} new
+                    {m.existing > 0 ? `, ${m.existing} existing (will be replaced)` : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <div className="alert warning" style={{ marginBottom: 12 }}>
+              Whatever you choose runs fully unattended across every module and screen above —
+              no per-screen or per-module prompts. New screens are generated fresh either way.
+              You'll review and Approve &amp; Push each screen individually once the whole
+              sweep finishes.
+            </div>
+
+            {(() => {
+              const allExisting = sweepDiscovery.grand.new === 0;
+              return (
+              <>
+              {!allExisting && (
+                <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 }}>
+                  {sweepDiscovery.grand.new} screen(s) above are new and have no existing tests to
+                  append to — only Replace is available. Append shows up once every queued screen
+                  already has tests.
+                </div>
+              )}
+              {!sweepAppendMode ? (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="primary" onClick={() => handleStartSweep("replace")}>↻ Replace</button>
+                  {allExisting && (
+                    <button onClick={() => setSweepAppendMode(true)}>➕ Append</button>
+                  )}
+                  <button className="danger" onClick={handleCancelSweep}>✗ Cancel</button>
+                </div>
+              ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div>
+                  <label className="field-label">What should be added to every existing screen?</label>
+                  <textarea
+                    rows={4}
+                    placeholder="Describe what to add — e.g. &quot;add a scenario for negative amount validation&quot; — this same instruction is applied to all existing screens above."
+                    value={sweepAppendText}
+                    onChange={(e) => setSweepAppendText(e.target.value)}
+                  />
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    className="primary"
+                    onClick={() => handleStartSweep("append", sweepAppendText.trim())}
+                    disabled={!sweepAppendText.trim()}
+                  >
+                    ✓ Append — start unattended sweep
+                  </button>
+                  <button onClick={() => setSweepAppendMode(false)}>← Back</button>
+                </div>
+              </div>
+              )}
+              </>
+              );
+            })()}
+          </div>
+        )}
+
         {showConflict && (() => {
           const preview = conflict.conflicts[conflictPreview];
-          const isModule = conflict.scope === "module";
           return (
             <div>
               <div className="section-header">
                 <span className="section-title">
-                  {isModule
-                    ? `${conflict.conflicts.length} of ${conflict.conflicts.length + conflict.new_count} screen(s) already have tests`
-                    : `${preview.name} already has tests in the QC repo`}
+                  {preview.name} already has tests in the QC repo
                 </span>
                 {phaseInfo && <Badge tone={phaseInfo.tone}>{phaseInfo.label}</Badge>}
               </div>
-
-              {isModule && conflict.new_count > 0 && (
-                <div className="alert warning" style={{ marginBottom: 10 }}>
-                  {conflict.new_count} screen(s) in this module have no existing tests — those will be generated fresh either way.
-                </div>
-              )}
-
-              {isModule && conflict.conflicts.length > 1 && (
-                <div className="screen-chip-row">
-                  {conflict.conflicts.map((c, i) => (
-                    <button
-                      key={c.name}
-                      className={`screen-chip${i === conflictPreview ? " active" : ""}`}
-                      onClick={() => setConflictPreview(i)}
-                    >
-                      {c.name}
-                    </button>
-                  ))}
-                </div>
-              )}
 
               <div className="side-by-side">
                 <div className="sxs-panel">
@@ -803,12 +992,6 @@ export default function App() {
                   <pre>{preview.existing_script}</pre>
                 </div>
               </div>
-
-              {isModule && (
-                <div className="alert warning" style={{ marginBottom: 4 }}>
-                  Whatever you choose applies to all {conflict.conflicts.length} screen(s) listed above.
-                </div>
-              )}
 
               {!appendMode ? (
                 <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
@@ -837,7 +1020,7 @@ export default function App() {
           );
         })()}
 
-        {hasArtifacts && !showConflict && (
+        {hasArtifacts && !showConflict && !showSweepConfirm && (
           <div>
             <div className="section-header">
               <span className="section-title">
@@ -848,6 +1031,12 @@ export default function App() {
                   <span className="path-pill" title={artifacts.resolved_path}>
                     {artifacts.resolved_path}
                   </span>
+                )}
+                {canApprove && artifacts.scope === "module" && (
+                  <>
+                    <button className="primary" onClick={handleApproveAll}>✓ Approve &amp; Push All</button>
+                    <button className="danger" onClick={handleRejectAll}>✗ Reject All</button>
+                  </>
                 )}
                 {phaseInfo && <Badge tone={phaseInfo.tone}>{phaseInfo.label}</Badge>}
               </div>
@@ -861,11 +1050,14 @@ export default function App() {
 
             {artifacts.scope === "module" && artifacts.screens && (() => {
               const shortName = (fullName) => fullName.split("/").filter(Boolean).pop() || fullName;
+              const distinctModules = new Set(artifacts.screens.map((s) => s.module).filter(Boolean));
+              const multiModule = distinctModules.size > 1;
+              const displayName = (s) => (multiModule && s.module ? `${s.module} / ${shortName(s.name)}` : shortName(s.name));
 
               const filtered = artifacts.screens
                 .map((s, i) => ({ s, i }))
-                .filter(({ s }) => shortName(s.name).toLowerCase().includes(screenQuery.toLowerCase()));
-              const currentName = shortName(artifacts.screens[selectedScreen]?.name || "");
+                .filter(({ s }) => displayName(s).toLowerCase().includes(screenQuery.toLowerCase()));
+              const currentName = displayName(artifacts.screens[selectedScreen] || {});
               return (
                 <div className="screen-picker">
                   <label className="field-label">Screen ({artifacts.screens.length})</label>
@@ -887,7 +1079,7 @@ export default function App() {
                         )}
                         {filtered.map(({ s, i }) => (
                           <div
-                            key={s.name}
+                            key={`${s.module || ""}:${s.name}`}
                             className={`combobox-option${i === selectedScreen ? " active" : ""}`}
                             title={s.name}
                             onMouseDown={() => {
@@ -896,7 +1088,8 @@ export default function App() {
                               setScreenQuery("");
                             }}
                           >
-                            {shortName(s.name)}
+                            {displayName(s)}
+                            {s.approved && <span className="edited-badge" style={{ marginLeft: 6 }}>pushed</span>}
                           </div>
                         ))}
                       </div>
@@ -1015,7 +1208,7 @@ export default function App() {
                   {canApprove && (
                     <>
                       <button className="primary" onClick={handleApprove}>✓ Approve and push</button>
-                      <button className="danger" onClick={handleReject}>✗ Reject</button>
+                      <button className="danger" onClick={handleRejectScreen}>✗ Reject</button>
                     </>
                   )}
                   {canRun && (
