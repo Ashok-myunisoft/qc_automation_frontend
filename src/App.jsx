@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const WS_URL = "ws://localhost:8000/ws/qc";
+const WS_URL = "ws://217.217.249.121:8053/ws/qc";
 
 const PHASE_LABELS = {
   idle:               null,
