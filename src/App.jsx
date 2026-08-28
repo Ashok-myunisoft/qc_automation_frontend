@@ -213,6 +213,94 @@ function EnvDrawer({ envDraft, setEnvDraft, onSave, onClose }) {
   );
 }
 
+// Reusable searchable/filterable dropdown, modeled on this app's existing
+// screen-run combobox pattern (same .combobox/.combobox-list/
+// .combobox-option classes) so it looks and behaves consistently with the
+// rest of the UI. `options` is a flat array of strings; `value` is the
+// currently-selected string (or "" for none); `onSelect` fires with the
+// chosen option's exact string. Purely a picker — it never lets the user
+// type a value that isn't one of `options`, since these dropdowns exist
+// specifically to stop free-text module/screen names from drifting out of
+// sync with what's actually in the repo.
+// Reusable searchable dropdown, modeled on this app's existing screen-run
+// combobox pattern (same .combobox/.combobox-list/.combobox-option
+// classes) so it looks and behaves consistently with the rest of the UI.
+// `options` is a flat array of strings pulled live from the repo;
+// `value` is the currently-selected string (or "" for none); `onSelect`
+// fires with the chosen string. This is a hybrid picker, not a strict
+// one: it suggests and filters real repo options as you type (the
+// common case — picking something that already exists), but does NOT
+// require the typed text to match one of them. A module or screen that
+// doesn't exist in the repo yet (first-ever generation for it, or an
+// existing module getting a brand-new screen) is a normal, expected case
+// here, not an error — so whatever's typed is accepted as a new value on
+// blur if it doesn't match anything in the list.
+function SearchableSelect({ options, value, onSelect, placeholder, disabled, loading }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+
+  const filtered = (options || []).filter((o) =>
+    o.toLowerCase().includes(query.toLowerCase())
+  );
+
+  return (
+    <div className="combobox">
+      <input
+        type="text"
+        className="combobox-input"
+        placeholder={loading ? "Loading from repo…" : placeholder}
+        title={value || ""}
+        value={open ? query : value}
+        disabled={disabled || loading}
+        onFocus={() => { setOpen(true); setQuery(value || ""); }}
+        onChange={(e) => setQuery(e.target.value)}
+        onBlur={() => {
+          // Delayed so a mousedown on an option (which must fire first,
+          // before blur, to register the click at all) still gets to run
+          // its own onSelect before this closes the list — same 120ms
+          // pattern already used elsewhere in this app for that reason.
+          // Reads query via the functional setState form rather than the
+          // closed-over value, so it sees query AS IT ACTUALLY IS at the
+          // moment this fires — including "" if an option-click already
+          // cleared it moments earlier — instead of a stale snapshot from
+          // whenever this blur handler was originally created.
+          setTimeout(() => {
+            setQuery((q) => {
+              const typed = q.trim();
+              if (typed) onSelect(typed);
+              return q;
+            });
+            setOpen(false);
+          }, 120);
+        }}
+      />
+      {open && (
+        <div className="combobox-list">
+          {filtered.length === 0 && (
+            <div className="combobox-empty">
+              {query.trim()
+                ? `No repo match — "${query.trim()}" will be used as new`
+                : (options || []).length === 0
+                  ? "Nothing in the repo yet — type to enter a new one"
+                  : "Type to search, or enter a new name"}
+            </div>
+          )}
+          {filtered.map((o) => (
+            <div
+              key={o}
+              className={`combobox-option${o === value ? " active" : ""}`}
+              title={o}
+              onMouseDown={() => { onSelect(o); setOpen(false); setQuery(""); }}
+            >
+              {o}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [scope, setScope]     = useState("screen");
   const [mode, setMode]       = useState("fetch");
@@ -238,9 +326,14 @@ export default function App() {
   const [screenQuery, setScreenQuery] = useState("");
   const [screenDropdownOpen, setScreenDropdownOpen] = useState(false);
 
+  // Repo module (in "screen" scope) — live module -> [screen,...] map fetched
+  // from the QC repo's real current structure via "list_repo_structure",
+  // not hardcoded and not carried over from a previous session.
+  const [moduleScreenMap, setModuleScreenMap] = useState({});
+  const [repoStructureLoading, setRepoStructureLoading] = useState(false);
+
   // Multi-module queue (Whole module scope only).
   const [moduleChips, setModuleChips] = useState([]);
-  const [chipDraft, setChipDraft] = useState("");
 
   // Discovery summary shown before an unattended sweep starts — per
   // module breakdown of how many screens exist / are new, gathered by
@@ -300,13 +393,26 @@ export default function App() {
   useEffect(() => {
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
-    ws.onopen  = () => setConnected(true);
+    ws.onopen  = () => {
+      setConnected(true);
+      // Live module/screen list for the dropdowns — fetched fresh every
+      // time a connection opens (new tab, reload, reconnect), never
+      // hardcoded and never left over from a previous session. Sent
+      // directly on the raw socket (not via the send() helper below,
+      // which isn't in scope yet at this point in the component body)
+      // now that the connection is confirmed open.
+      setRepoStructureLoading(true);
+      ws.send(JSON.stringify({ action: "list_repo_structure" }));
+    };
     ws.onclose = () => setConnected(false);
     ws.onerror = () => setConnected(false);
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       if (msg.type === "log") {
         log(msg.text, msg.tone);
+      } else if (msg.type === "repo_structure") {
+        setModuleScreenMap(msg.modules || {});
+        setRepoStructureLoading(false);
       } else if (msg.type === "status") {
         setPhase(msg.phase);
         if (msg.phase !== "done") setResult(null);
@@ -384,21 +490,12 @@ export default function App() {
     return false;
   };
 
-  const addModuleChip = () => {
-    const v = chipDraft.trim();
+  const addModuleChip = (value) => {
+    const v = value.trim();
     if (!v) return;
     setModuleChips((prev) => (prev.includes(v) ? prev : [...prev, v]));
-    setChipDraft("");
   };
   const removeModuleChip = (v) => setModuleChips((prev) => prev.filter((m) => m !== v));
-  const handleChipInputKeyDown = (e) => {
-    if (e.key === "Enter" || e.key === ",") {
-      e.preventDefault();
-      addModuleChip();
-    } else if (e.key === "Backspace" && !chipDraft && moduleChips.length > 0) {
-      setModuleChips((prev) => prev.slice(0, -1));
-    }
-  };
 
   const resetRun = () => {
     setLines([]);
@@ -747,17 +844,21 @@ export default function App() {
                 <label className="field-label">
                   Modules {moduleChips.length > 0 ? `(${moduleChips.length} queued)` : ""}
                 </label>
-                {/* Input box holds ONLY the text field now. Chips render
-                    in a separate block below it, stacked vertically —
-                    one per line — instead of wrapping inside the box. */}
-                <input
-                  type="text"
-                  placeholder="e.g. Finance — press Enter"
-                  value={chipDraft}
-                  onChange={(e) => setChipDraft(e.target.value)}
-                  onKeyDown={handleChipInputKeyDown}
-                  onBlur={addModuleChip}
+                {/* Picking from the dropdown adds a chip immediately —
+                    no free text, no Enter-to-confirm, so a queued module
+                    name can never drift from what's actually in the repo.
+                    Already-queued modules stay in the option list (picking
+                    one again is a harmless no-op via addModuleChip's own
+                    dedupe) rather than filtering them out, since removing
+                    options as they're picked would make the list jump
+                    around mid-selection. */}
+                <SearchableSelect
+                  options={Object.keys(moduleScreenMap)}
+                  value=""
+                  loading={repoStructureLoading}
+                  placeholder="Select a module to queue…"
                   disabled={busy}
+                  onSelect={(m) => addModuleChip(m)}
                 />
                 {moduleChips.length > 0 && (
                   <div
@@ -795,15 +896,27 @@ export default function App() {
             ) : (
               <div>
                 <label className="field-label">Module</label>
-                <input type="text" placeholder="e.g. Finance" value={moduleName}
-                  onChange={(e) => setModuleName(e.target.value)} disabled={busy} />
+                <SearchableSelect
+                  options={Object.keys(moduleScreenMap)}
+                  value={moduleName}
+                  loading={repoStructureLoading}
+                  placeholder="Select a module…"
+                  disabled={busy}
+                  onSelect={(m) => { setModuleName(m); setScreen(""); }}
+                />
               </div>
             )}
             {scope === "screen" && (
               <div>
                 <label className="field-label">Screen</label>
-                <input type="text" placeholder="e.g. Instrument master" value={screen}
-                  onChange={(e) => setScreen(e.target.value)} disabled={busy} />
+                <SearchableSelect
+                  options={moduleScreenMap[moduleName] || []}
+                  value={screen}
+                  loading={repoStructureLoading}
+                  placeholder={moduleName ? "Select a screen…" : "Pick a module first"}
+                  disabled={busy || !moduleName}
+                  onSelect={(s) => setScreen(s)}
+                />
               </div>
             )}
           </div>
