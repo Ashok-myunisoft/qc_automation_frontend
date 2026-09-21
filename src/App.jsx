@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const WS_URL = "ws://217.217.249.121:8053/ws/qc";
+const WS_URL = "ws://localhost:8000/ws/qc";
 
 const PHASE_LABELS = {
   idle:               null,
@@ -11,6 +11,7 @@ const PHASE_LABELS = {
   awaiting_conflict:  { label: "Needs a decision",   tone: "warning"  },
   awaiting_sweep_confirm: { label: "Ready to sweep", tone: "warning"  },
   sweeping:           { label: "Sweeping (unattended)", tone: "accent" },
+  auto_running:       { label: "Auto-run (unattended)", tone: "accent" },
   not_found:          { label: "Not found",          tone: "danger"   },
   done:               { label: "Done",               tone: "success"  },
 };
@@ -528,6 +529,52 @@ export default function App() {
     }
   };
 
+  // ------------------------------------------------------------------
+  // AUTO-RUN — one click, whole pipeline, no prompts: generate (new and
+  // existing, existing always replaced) -> auto-push to GitLab -> Cypress
+  // run -> report + screenshots built. Works for a single screen or a
+  // queue of modules. Fetch / Generate / Approve / Run / Report above are
+  // untouched.
+  // ------------------------------------------------------------------
+  const handleAutoRun = () => {
+    if (!envConfirmed) {
+      setAlert({ message: "set your test environment (baseUrl / db / username / password) before starting auto-run.", tone: "danger" });
+      setEnvMenuOpen(true);
+      return;
+    }
+
+    if (scope === "module") {
+      const list = currentModuleList();
+      if (!list.length) {
+        setAlert({ message: "add at least one module.", tone: "danger" });
+        return;
+      }
+      resetRun();
+      const sent = send({ action: "auto_run", scope: "module", modules: list, request: userRequest });
+      if (sent) {
+        setPhase("auto_running");
+        log(`starting auto-run for ${list.length} module(s) — generate, push, run and report will follow on their own...`, "secondary");
+      }
+    } else {
+      if (!moduleName.trim() || !screen.trim()) {
+        setAlert({ message: "Enter both module and screen name.", tone: "danger" });
+        return;
+      }
+      resetRun();
+      const sent = send({
+        action: "auto_run",
+        scope: "screen",
+        module: moduleName.trim(),
+        screen: screen.trim(),
+        request: userRequest,
+      });
+      if (sent) {
+        setPhase("auto_running");
+        log("starting auto-run — generate, push, run and report will follow on their own...", "secondary");
+      }
+    }
+  };
+
   // Approve & Push is now PER SCREEN in module scope — pushes only the
   // currently-selected screen (identified by module + moduleIndex),
   // not the whole module batch.
@@ -654,8 +701,8 @@ export default function App() {
   );
   const canRun       = hasArtifacts && phase === "awaiting_review";
   const canApprove   = hasArtifacts && phase === "awaiting_approval";
-  const showLog      = lines.length > 0 || phase === "resolving" || phase === "running" || phase === "sweeping" || phase === "done";
-  const busy         = phase === "resolving" || phase === "running" || phase === "sweeping";
+  const showLog      = lines.length > 0 || phase === "resolving" || phase === "running" || phase === "sweeping" || phase === "auto_running" || phase === "done";
+  const busy         = phase === "resolving" || phase === "running" || phase === "sweeping" || phase === "auto_running";
   const showConflict = !!conflict && phase === "awaiting_conflict";
   const showSweepConfirm = !!sweepDiscovery && phase === "awaiting_sweep_confirm";
   const logReadyForHighlight = phase === "done" && !busy;
@@ -822,6 +869,11 @@ export default function App() {
               onClick={() => setMode("generate")} disabled={busy}>
               Generate new
             </button>
+            <button className={`tab-btn${mode === "autorun" ? " active" : ""}`}
+              style={{ gridColumn: "1 / -1" }}
+              onClick={() => setMode("autorun")} disabled={busy}>
+              ⚡ Auto-run (unattended)
+            </button>
           </div>
 
           {mode === "fetch" ? (
@@ -832,7 +884,7 @@ export default function App() {
             >
               ▶ Fetch
             </button>
-          ) : (
+          ) : mode === "generate" ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <div>
                 <label className="field-label">Test request</label>
@@ -847,6 +899,29 @@ export default function App() {
               >
                 ✦ Generate
               </button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div>
+                <label className="field-label">Test request (optional)</label>
+                <input type="text" placeholder="e.g. Generate tests for creating and updating this screen" value={userRequest}
+                  onChange={(e) => setUserRequest(e.target.value)} disabled={busy} />
+              </div>
+
+              <button
+                className="primary full"
+                onClick={handleAutoRun}
+                disabled={busy}
+              >
+                ⚡ Start auto-run
+              </button>
+
+              <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                Generates every screen, pushes it to GitLab, runs Cypress and builds the
+                report — all on its own, no prompts. Existing screens are replaced. Keep
+                this tab open until it finishes, then download the Excel report and
+                screenshots.
+              </div>
             </div>
           )}
         </div>
