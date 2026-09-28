@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Sidebar from "./Sidebar";
 import HistoryPage, { apiBaseFromWs } from "./HistoryPage";
+import {
+  IconAlert, IconArrowLeft, IconBolt, IconBox, IconCheck, IconChevronDown, IconChevronRight,
+  IconCode, IconDownload, IconEdit, IconFile, IconImage, IconLayers, IconMaximize, IconMinimize,
+  IconPlay, IconPlayCircle, IconPlus, IconRefresh, IconSearch, IconSheet, IconSpark, IconStop,
+  IconTarget, IconX,
+} from "./icons";
 
 const WS_URL = "ws://localhost:8000/ws/qc";
 
@@ -102,6 +108,48 @@ function matchScenarioLines(prefix, lines) {
   return ids;
 }
 
+const STEP_RE = /^(Given|When|Then|And|But|\*)(\s.*)?$/;
+
+// Renders one scenario body as numbered Given / When / Then rows.
+// Presentation only — the raw text is exactly what the backend sent.
+function GherkinBody({ body }) {
+  const rows = (body || "")
+    .split("\n")
+    .filter((l) => l.trim() !== "");
+  let n = 0;
+  let lastKw = "";
+  return (
+    <div className="gherkin">
+      {rows.map((raw, i) => {
+        n += 1;
+        const trimmed = raw.trim();
+        const m = trimmed.match(STEP_RE);
+        if (m) {
+          const kw = m[1];
+          const kind = kw === "And" || kw === "But" || kw === "*" ? lastKw || "and" : kw.toLowerCase();
+          if (kw !== "And" && kw !== "But" && kw !== "*") lastKw = kw.toLowerCase();
+          const cls = kw === "And" || kw === "But" || kw === "*" ? `kw kw-${kind} kw-soft` : `kw kw-${kind}`;
+          return (
+            <div className="g-row" key={i}>
+              <span className="g-num">{n}</span>
+              <span className={cls}>{kw === "*" ? "•" : kw}</span>
+              <span className="g-text">{(m[2] || "").trim()}</span>
+            </div>
+          );
+        }
+        // tables, Examples:, doc-strings, comments — keep indentation as written
+        const indent = raw.length - raw.trimStart().length;
+        return (
+          <div className="g-row g-plain" key={i}>
+            <span className="g-num">{n}</span>
+            <span className="g-raw" style={{ paddingLeft: Math.min(indent, 24) * 4 }}>{trimmed}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function FeatureFileView({ text, onOpenScenariosChange }) {
   const { header, scenarios } = useMemo(() => parseFeature(text), [text]);
   const [openSet, setOpenSet] = useState(() => new Set());
@@ -114,6 +162,9 @@ function FeatureFileView({ text, onOpenScenariosChange }) {
       return next;
     });
   };
+  const allOpen = scenarios.length > 0 && openSet.size === scenarios.length;
+  const toggleAll = () =>
+    setOpenSet(allOpen ? new Set() : new Set(scenarios.map((_, i) => i)));
 
   useEffect(() => {
     if (!onOpenScenariosChange) return;
@@ -125,30 +176,78 @@ function FeatureFileView({ text, onOpenScenariosChange }) {
   }, [openSet, scenarios]);
 
   if (scenarios.length === 0) {
-    return <pre>{text}</pre>;
+    return <CodeView text={text} plain />;
   }
 
   return (
     <div className="feature-view">
-      {header.trim() && <pre className="feature-header">{header}</pre>}
+      {header.trim() && <pre className="feature-header">{header.trim()}</pre>}
+      <div className="feature-toolbar">
+        <span>{scenarios.length} scenario{scenarios.length === 1 ? "" : "s"}</span>
+        <button type="button" className="link-btn" onClick={toggleAll}>
+          {allOpen ? "Collapse all" : "Expand all"}
+        </button>
+      </div>
       {scenarios.map((sc, idx) => {
         const isOpen = openSet.has(idx);
+        const title = sc.title.replace(/^Scenario( Outline)?:\s*/, "");
+        const isOutline = /^Scenario Outline:/.test(sc.title);
         return (
-          <div key={idx} className={`feature-scenario${isOpen ? " open" : ""}`}>
+          <div key={idx} className={`scenario-card${isOpen ? " open" : ""}`}>
             <button
               type="button"
-              className="feature-scenario-toggle"
+              className="scenario-head"
               onClick={() => toggle(idx)}
               aria-expanded={isOpen}
             >
-              <span className="feature-fold-arrow">{isOpen ? "▾" : "▸"}</span>
-              {sc.tag && <span className="feature-scenario-tag">{sc.tag}</span>}
-              <span className="feature-scenario-title">{sc.title}</span>
+              <span className="scenario-chev"><IconChevronRight size={14} /></span>
+              <span className="scenario-index">{idx + 1}</span>
+              <span className="scenario-title">
+                <span className="scenario-kind">{isOutline ? "Scenario Outline" : "Scenario"}</span>
+                {title}
+              </span>
+              {sc.tag && <span className="scenario-tag">{sc.tag}</span>}
             </button>
-            {isOpen && <pre className="feature-scenario-body">{sc.body}</pre>}
+            {isOpen && <GherkinBody body={sc.body} />}
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------
+// Script viewer — line numbers + light JS highlighting (display only)
+// ------------------------------------------------------------------
+const JS_TOKEN_RE =
+  /(\/\/.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|\b(const|let|var|function|return|if|else|import|from|require|async|await|new|export|default|try|catch|throw|for|while|of|in|true|false|null|undefined)\b|\b(describe|it|context|before|after|beforeEach|afterEach|cy|expect|Given|When|Then|And|But)\b|(\b\d+(?:\.\d+)?\b)/g;
+
+function highlightJs(line) {
+  const out = [];
+  let last = 0;
+  let m;
+  JS_TOKEN_RE.lastIndex = 0;
+  while ((m = JS_TOKEN_RE.exec(line)) !== null) {
+    if (m.index > last) out.push(line.slice(last, m.index));
+    const cls = m[1] ? "t-com" : m[2] ? "t-str" : m[3] ? "t-kw" : m[4] ? "t-fn" : "t-num";
+    out.push(<span key={m.index} className={cls}>{m[0]}</span>);
+    last = m.index + m[0].length;
+    if (m[0].length === 0) JS_TOKEN_RE.lastIndex++;
+  }
+  if (last < line.length) out.push(line.slice(last));
+  return out;
+}
+
+function CodeView({ text, plain }) {
+  const lines = useMemo(() => (text || "").replace(/\s+$/, "").split("\n"), [text]);
+  return (
+    <div className="code-view">
+      {lines.map((l, i) => (
+        <div className="c-row" key={i}>
+          <span className="c-num">{i + 1}</span>
+          <span className="c-text">{plain ? l || " " : (l ? highlightJs(l) : " ")}</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -174,13 +273,49 @@ function PanelEditor({ initialText, onSave, onCancel }) {
   );
 }
 
+function PanelHead({ icon, title, meta, children }) {
+  return (
+    <div className="sxs-panel-header">
+      <span className="sxs-icon">{icon}</span>
+      <span className="sxs-title">{title}</span>
+      {meta && <span className="sxs-meta">{meta}</span>}
+      <span className="sxs-spacer" />
+      {children}
+    </div>
+  );
+}
+
+const STEP_LABELS = ["Target", "Generate", "Review", "Cypress run", "Report"];
+
+function Stepper({ current, allDone, secondLabel }) {
+  const labels = STEP_LABELS.map((l, i) => (i === 1 ? secondLabel : l));
+  return (
+    <ol className="stepper" aria-label="Progress">
+      {labels.map((label, i) => {
+        const done = allDone || i < current;
+        const active = !allDone && i === current;
+        return (
+          <li
+            key={label}
+            className={`step${done ? " done" : ""}${active ? " active" : ""}`}
+            aria-current={active ? "step" : undefined}
+          >
+            <span className="step-dot">{done ? <IconCheck size={14} strokeWidth={2.6} /> : i + 1}</span>
+            <span className="step-label">{label}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 function EnvDrawer({ envDraft, setEnvDraft, onSave, onClose }) {
   return (
     <div className="env-drawer-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="env-drawer-panel">
         <div className="env-drawer-header">
           <span className="env-drawer-title">Test environment</span>
-          <button type="button" className="secondary env-drawer-close" onClick={onClose}>✕</button>
+          <button type="button" className="secondary env-drawer-close" onClick={onClose} aria-label="Close"><IconX size={15} /></button>
         </div>
         <div className="env-drawer-body">
           <div>
@@ -710,6 +845,21 @@ export default function App() {
   const showSweepConfirm = !!sweepDiscovery && phase === "awaiting_sweep_confirm";
   const logReadyForHighlight = phase === "done" && !busy;
 
+  // ---- presentation-only derived values (no behaviour) ----------------
+  const shortNameOf = (n) => (n || "").split("/").filter(Boolean).pop() || n || "";
+  const crumbScreen = artifacts
+    ? (artifacts.scope === "module" && artifacts.screens
+        ? shortNameOf(artifacts.screens[selectedScreen]?.name)
+        : shortNameOf((artifacts.resolved_path || "").replace(/\/[^/]*$/, "")))
+    : "";
+  const crumb = hasArtifacts ? (crumbScreen || screen.trim()) : "";
+
+  let stepCurrent = 0;
+  if (phase === "running") stepCurrent = 3;
+  else if (phase === "done") stepCurrent = 4;
+  else if (phase === "resolving" || phase === "sweeping" || phase === "auto_running") stepCurrent = 1;
+  else if (hasArtifacts || showConflict || showSweepConfirm) stepCurrent = 2;
+
   return (
     <>
       {preview && (
@@ -718,8 +868,8 @@ export default function App() {
             <div className="preview-header">
               <div className="preview-title">Screenshots — preview</div>
               <div className="preview-actions">
-                <button className="secondary" onClick={handleDownloadPreview}>⬇ Download</button>
-                <button className="secondary" onClick={() => setPreview(null)}>✕ Close</button>
+                <button className="secondary" onClick={handleDownloadPreview}><IconDownload /> Download</button>
+                <button className="secondary" onClick={() => setPreview(null)}><IconX /> Close</button>
               </div>
             </div>
             <iframe
@@ -751,577 +901,617 @@ export default function App() {
         />
 
         <div className="content">
-          <div className="page-header">
-            <span className="page-title">{view === "history" ? "History" : "Dashboard"}</span>
-            {view === "dashboard" && phaseInfo && <Badge tone={phaseInfo.tone}>{phaseInfo.label}</Badge>}
-          </div>
+          <header className="page-header">
+            <nav className="crumbs" aria-label="Breadcrumb">
+              <span className={`crumb${view === "dashboard" && crumb ? "" : " current"}`}>
+                {view === "history" ? "History" : "Dashboard"}
+              </span>
+              {view === "dashboard" && crumb && (
+                <>
+                  <IconChevronRight size={14} />
+                  <span className="crumb current">{crumb}</span>
+                </>
+              )}
+            </nav>
+            <div className="header-pills">
+              <span className={`pill ${connected ? "success" : "danger"}`}>
+                <span className="pill-dot" />
+                Backend: {connected ? "Connected" : "Disconnected"}
+              </span>
+              {view === "dashboard" && phaseInfo && (
+                <span className={`pill ${phaseInfo.tone}`}>
+                  <span className="pill-dot" />
+                  Phase: {phaseInfo.label}
+                </span>
+              )}
+            </div>
+          </header>
 
           {view === "history" && <HistoryPage apiBase={apiBaseFromWs(WS_URL)} />}
 
           <div className="dashboard" style={{ display: view === "dashboard" ? undefined : "none" }}>
 
-      <aside className="left-panel">
+            <div className="stepper-wrap">
+              <Stepper
+                current={stepCurrent}
+                allDone={phase === "done"}
+                secondLabel={mode === "fetch" ? "Fetch" : "Generate"}
+              />
+            </div>
 
-        <div>
-          <p className="card-title">Scope</p>
-          <div className="tabs scope-tabs">
-            <button className={`tab-btn${scope === "screen" ? " active" : ""}`}
-              onClick={() => setScope("screen")} disabled={busy}>
-              Single screen
-            </button>
-            <button className={`tab-btn${scope === "module" ? " active" : ""}`}
-              onClick={() => setScope("module")} disabled={busy}>
-              Whole module
-            </button>
-          </div>
-        </div>
+            <aside className="left-panel">
 
-        <div>
-          <p className="card-title">{scope === "module" ? "Module(s)" : "Screen"}</p>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {scope === "module" ? (
-              <div>
-                <label className="field-label">
-                  Modules {moduleChips.length > 0 ? `(${moduleChips.length} queued)` : ""}
-                </label>
-                {/* Input box holds ONLY the text field now. Chips render
-                    in a separate block below it, stacked vertically —
-                    one per line — instead of wrapping inside the box. */}
-                <input
-                  type="text"
-                  placeholder="e.g. Finance — press Enter"
-                  value={chipDraft}
-                  onChange={(e) => setChipDraft(e.target.value)}
-                  onKeyDown={handleChipInputKeyDown}
-                  onBlur={addModuleChip}
-                  disabled={busy}
-                />
-                {moduleChips.length > 0 && (
-                  <div
-                    style={{
-                      display: "flex", flexDirection: "column", gap: 6, marginTop: 8,
-                    }}
-                  >
-                    {moduleChips.map((m) => (
-                      <span
-                        key={m}
-                        style={{
-                          display: "flex", alignItems: "center", justifyContent: "space-between",
-                          background: "var(--surface-3)", color: "var(--text-primary)", borderRadius: "var(--radius)",
-                          padding: "6px 10px", fontSize: 13,
-                        }}
-                      >
-                        {m}
-                        <button
-                          type="button"
-                          onClick={() => removeModuleChip(m)}
-                          disabled={busy}
-                          aria-label={`remove ${m}`}
-                          style={{
-                            border: "none", background: "transparent", color: "var(--text-muted)",
-                            cursor: busy ? "not-allowed" : "pointer", fontSize: 15, lineHeight: 1, padding: 0,
-                          }}
-                        >
-                          ×
-                        </button>
-                      </span>
+              <section className="card">
+                <div className="card-head">
+                  <span className="card-ico"><IconTarget size={18} /></span>
+                  <div className="card-head-text">
+                    <h3 className="card-heading">Scope</h3>
+                    <p className="card-sub">Select the scope for test generation</p>
+                  </div>
+                </div>
+                <div className="segmented">
+                  <button className={`seg-btn${scope === "screen" ? " active" : ""}`}
+                    onClick={() => setScope("screen")} disabled={busy}>
+                    Single screen
+                  </button>
+                  <button className={`seg-btn${scope === "module" ? " active" : ""}`}
+                    onClick={() => setScope("module")} disabled={busy}>
+                    Whole module
+                  </button>
+                </div>
+              </section>
+
+              <section className="card">
+                <div className="card-head">
+                  <span className="card-ico"><IconBox size={18} /></span>
+                  <div className="card-head-text">
+                    <h3 className="card-heading">{scope === "module" ? "Target modules" : "Target screen"}</h3>
+                    <p className="card-sub">
+                      {scope === "module" ? "Add the ERP modules to work on" : "Choose the module and screen"}
+                    </p>
+                  </div>
+                </div>
+                <div className="field-stack">
+                  {scope === "module" ? (
+                    <div>
+                      <label className="field-label">
+                        Modules {moduleChips.length > 0 ? `(${moduleChips.length} queued)` : ""}
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Finance — press Enter"
+                        value={chipDraft}
+                        onChange={(e) => setChipDraft(e.target.value)}
+                        onKeyDown={handleChipInputKeyDown}
+                        onBlur={addModuleChip}
+                        disabled={busy}
+                      />
+                      {moduleChips.length > 0 && (
+                        <div className="chip-row">
+                          {moduleChips.map((m) => (
+                            <span key={m} className="chip">
+                              {m}
+                              <button
+                                type="button"
+                                className="chip-x"
+                                onClick={() => removeModuleChip(m)}
+                                disabled={busy}
+                                aria-label={`remove ${m}`}
+                              >
+                                <IconX size={12} strokeWidth={2.4} />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="field-label">Module</label>
+                      <input type="text" placeholder="e.g. Finance" value={moduleName}
+                        onChange={(e) => setModuleName(e.target.value)} disabled={busy} />
+                    </div>
+                  )}
+                  {scope === "screen" && (
+                    <div>
+                      <label className="field-label">Screen</label>
+                      <input type="text" placeholder="e.g. Instrument master" value={screen}
+                        onChange={(e) => setScreen(e.target.value)} disabled={busy} />
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="card">
+                <div className="card-head">
+                  <span className="card-ico"><IconPlayCircle size={18} /></span>
+                  <div className="card-head-text">
+                    <h3 className="card-heading">Actions</h3>
+                    <p className="card-sub">Fetch existing tests, generate new ones, or run everything</p>
+                  </div>
+                </div>
+
+                <div className="segmented three">
+                  <button className={`seg-btn${mode === "fetch" ? " active" : ""}`}
+                    onClick={() => setMode("fetch")} disabled={busy} title="Fetch existing">
+                    Fetch
+                  </button>
+                  <button className={`seg-btn${mode === "generate" ? " active" : ""}`}
+                    onClick={() => setMode("generate")} disabled={busy} title="Generate new">
+                    Generate
+                  </button>
+                  <button className={`seg-btn${mode === "autorun" ? " active" : ""}`}
+                    onClick={() => setMode("autorun")} disabled={busy} title="Auto-run (unattended)">
+                    <IconBolt size={14} /> Auto-run
+                  </button>
+                </div>
+
+                {mode === "fetch" ? (
+                  <div className="field-stack top-gap">
+                    <button
+                      className="primary full lg"
+                      onClick={scope === "module" ? handleFetchModuleQueue : handleFetch}
+                      disabled={busy}
+                    >
+                      <IconDownload /> Fetch existing tests
+                    </button>
+                  </div>
+                ) : mode === "generate" ? (
+                  <div className="field-stack top-gap">
+                    <div>
+                      <label className="field-label">Test request</label>
+                      <textarea rows={3} placeholder="e.g. Generate tests for creating and updating this screen" value={userRequest}
+                        onChange={(e) => setUserRequest(e.target.value)} disabled={busy} />
+                    </div>
+                    <button
+                      className="primary full lg"
+                      onClick={scope === "module" ? handleDiscoverModuleQueue : handleGenerate}
+                      disabled={busy}
+                    >
+                      <IconSpark /> Start generation
+                    </button>
+                  </div>
+                ) : (
+                  <div className="field-stack top-gap">
+                    <div>
+                      <label className="field-label">Test request (optional)</label>
+                      <textarea rows={3} placeholder="e.g. Generate tests for creating and updating this screen" value={userRequest}
+                        onChange={(e) => setUserRequest(e.target.value)} disabled={busy} />
+                    </div>
+                    <button
+                      className="primary full lg"
+                      onClick={handleAutoRun}
+                      disabled={busy}
+                    >
+                      <IconBolt /> Start auto-run
+                    </button>
+                    <p className="hint">
+                    </p>
+                  </div>
+                )}
+
+                {busy && (
+                  <button className="danger full top-gap" onClick={handleTerminate}>
+                    <IconStop size={14} /> Terminate
+                  </button>
+                )}
+              </section>
+
+              {alert && (
+                <div className={`alert ${alert.tone}`}>
+                  <IconAlert size={16} />
+                  <span>{alert.message}</span>
+                </div>
+              )}
+
+              {lastRun && (
+                <section className="card last-run">
+                  <div className="last-run-label">Last run</div>
+                  <div className="last-run-screen">{lastRun.module} / {lastRun.screen}</div>
+                  <Badge tone={lastRun.passed ? "success" : "danger"}>
+                    {lastRun.passed ? <IconCheck size={12} strokeWidth={2.6} /> : <IconX size={12} strokeWidth={2.6} />}
+                    {lastRun.passed ? "Passed" : "Failed"}
+                  </Badge>
+                </section>
+              )}
+
+            </aside>
+
+            <main className="right-panel">
+
+              {!hasArtifacts && !showLog && !showConflict && !showSweepConfirm && (
+                <div className="empty-state">
+                  <div className="empty-state-icon"><IconSearch size={22} /></div>
+                  <p>Fetch an existing screen to review its test files,<br />or generate new tests from source code.</p>
+                </div>
+              )}
+
+              {showSweepConfirm && (
+                <section className="card">
+                  <div className="card-head">
+                    <span className="card-ico"><IconLayers size={18} /></span>
+                    <div className="card-head-text">
+                      <h3 className="card-heading">
+                        {sweepDiscovery.grand.total} screen(s) across {sweepDiscovery.modules.length} module(s) —
+                        {" "}{sweepDiscovery.grand.existing} already have tests
+                      </h3>
+                      <p className="card-sub">Confirm how the unattended sweep should treat them</p>
+                    </div>
+                  </div>
+
+                  <div className="list-rows">
+                    {sweepDiscovery.modules.map((m) => (
+                      <div key={m.module} className="list-row">
+                        <span className="list-row-main">{m.module}</span>
+                        <span className="list-row-meta">
+                          {m.total} screen(s) — {m.new} new
+                          {m.existing > 0 ? `, ${m.existing} existing (will be replaced)` : ""}
+                        </span>
+                      </div>
                     ))}
                   </div>
-                )}
-              </div>
-            ) : (
-              <div>
-                <label className="field-label">Module</label>
-                <input type="text" placeholder="e.g. Finance" value={moduleName}
-                  onChange={(e) => setModuleName(e.target.value)} disabled={busy} />
-              </div>
-            )}
-            {scope === "screen" && (
-              <div>
-                <label className="field-label">Screen</label>
-                <input type="text" placeholder="e.g. Instrument master" value={screen}
-                  onChange={(e) => setScreen(e.target.value)} disabled={busy} />
-              </div>
-            )}
-          </div>
-        </div>
 
-        <div className="divider" />
-
-        <div>
-          <p className="card-title">Action</p>
-          <div className="tabs" style={{ marginBottom: 14 }}>
-            <button className={`tab-btn${mode === "fetch" ? " active" : ""}`}
-              onClick={() => setMode("fetch")} disabled={busy}>
-              Fetch existing
-            </button>
-            <button className={`tab-btn${mode === "generate" ? " active" : ""}`}
-              onClick={() => setMode("generate")} disabled={busy}>
-              Generate new
-            </button>
-            <button className={`tab-btn${mode === "autorun" ? " active" : ""}`}
-              style={{ gridColumn: "1 / -1" }}
-              onClick={() => setMode("autorun")} disabled={busy}>
-              ⚡ Auto-run (unattended)
-            </button>
-          </div>
-
-          {mode === "fetch" ? (
-            <button
-              className="primary full"
-              onClick={scope === "module" ? handleFetchModuleQueue : handleFetch}
-              disabled={busy}
-            >
-              ▶ Fetch
-            </button>
-          ) : mode === "generate" ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div>
-                <label className="field-label">Test request</label>
-                <input type="text" placeholder="e.g. Generate tests for creating and updating this screen" value={userRequest}
-                  onChange={(e) => setUserRequest(e.target.value)} disabled={busy} />
-              </div>
-
-              <button
-                className="primary full"
-                onClick={scope === "module" ? handleDiscoverModuleQueue : handleGenerate}
-                disabled={busy}
-              >
-                ✦ Generate
-              </button>
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div>
-                <label className="field-label">Test request (optional)</label>
-                <input type="text" placeholder="e.g. Generate tests for creating and updating this screen" value={userRequest}
-                  onChange={(e) => setUserRequest(e.target.value)} disabled={busy} />
-              </div>
-
-              <button
-                className="primary full"
-                onClick={handleAutoRun}
-                disabled={busy}
-              >
-                ⚡ Start auto-run
-              </button>
-            </div>
-          )}
-        </div>
-
-        {busy && (
-          <button className="danger full" onClick={handleTerminate}>
-            ■ Terminate
-          </button>
-        )}
-
-        {alert && (
-          <div className={`alert ${alert.tone}`} style={{ marginTop: 4 }}>
-            {alert.message}
-          </div>
-        )}
-
-        {lastRun && (
-          <div className="last-run">
-            <div className="last-run-label">Last run</div>
-            <div className="last-run-screen">{lastRun.module} / {lastRun.screen}</div>
-            <Badge tone={lastRun.passed ? "success" : "danger"}>
-              {lastRun.passed ? "✓ Passed" : "✗ Failed"}
-            </Badge>
-          </div>
-        )}
-
-      </aside>
-
-      <main className="right-panel">
-
-        {!hasArtifacts && !showLog && !showConflict && !showSweepConfirm && (
-          <div className="empty-state">
-            <div className="empty-state-icon">🔍</div>
-            <p>Fetch an existing screen to review its test files,<br />or generate new tests from source code.</p>
-          </div>
-        )}
-
-        {showSweepConfirm && (
-          <div>
-            <div className="section-header">
-              <span className="section-title">
-                {sweepDiscovery.grand.total} screen(s) across {sweepDiscovery.modules.length} module(s) —
-                {" "}{sweepDiscovery.grand.existing} already have tests
-              </span>
-              {phaseInfo && <Badge tone={phaseInfo.tone}>{phaseInfo.label}</Badge>}
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
-              {sweepDiscovery.modules.map((m) => (
-                <div key={m.module} className="module-summary-row"
-                  style={{
-                    display: "flex", justifyContent: "space-between", alignItems: "center",
-                    padding: "8px 12px", background: "var(--surface-2)", borderRadius: "var(--radius)",
-                  }}>
-                  <span>{m.module}</span>
-                  <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                    {m.total} screen(s) — {m.new} new
-                    {m.existing > 0 ? `, ${m.existing} existing (will be replaced)` : ""}
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            <div className="alert warning" style={{ marginBottom: 12 }}>
-              Whatever you choose runs fully unattended across every module and screen above —
-              no per-screen or per-module prompts. New screens are generated fresh either way.
-              You'll review and Approve &amp; Push each screen individually once the whole
-              sweep finishes.
-            </div>
-
-            {(() => {
-              const allExisting = sweepDiscovery.grand.new === 0;
-              return (
-              <>
-              {!allExisting && (
-                <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 }}>
-                  {sweepDiscovery.grand.new} screen(s) above are new and have no existing tests to
-                  append to — only Replace is available. Append shows up once every queued screen
-                  already has tests.
-                </div>
-              )}
-              {!sweepAppendMode ? (
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button className="primary" onClick={() => handleStartSweep("replace")}>↻ Replace</button>
-                  {allExisting && (
-                    <button onClick={() => setSweepAppendMode(true)}>➕ Append</button>
-                  )}
-                  <button className="danger" onClick={handleCancelSweep}>✗ Cancel</button>
-                </div>
-              ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div>
-                  <label className="field-label">What should be added to every existing screen?</label>
-                  <textarea
-                    rows={4}
-                    placeholder="Describe what to add — e.g. &quot;add a scenario for negative amount validation&quot; — this same instruction is applied to all existing screens above."
-                    value={sweepAppendText}
-                    onChange={(e) => setSweepAppendText(e.target.value)}
-                  />
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button
-                    className="primary"
-                    onClick={() => handleStartSweep("append", sweepAppendText.trim())}
-                    disabled={!sweepAppendText.trim()}
-                  >
-                    ✓ Append — start unattended sweep
-                  </button>
-                  <button onClick={() => setSweepAppendMode(false)}>← Back</button>
-                </div>
-              </div>
-              )}
-              </>
-              );
-            })()}
-          </div>
-        )}
-
-        {showConflict && (() => {
-          const preview = conflict.conflicts[conflictPreview];
-          return (
-            <div>
-              <div className="section-header">
-                <span className="section-title">
-                  {preview.name} already has tests in the QC repo
-                </span>
-                {phaseInfo && <Badge tone={phaseInfo.tone}>{phaseInfo.label}</Badge>}
-              </div>
-
-              <div className="side-by-side">
-                <div className="sxs-panel">
-                  <div className="sxs-panel-header">
-                    <span className="sxs-icon">📄</span>
-                    <span>Existing feature file</span>
+                  <div className="alert warning" style={{ marginBottom: 12 }}>
+                    <IconAlert size={16} />
+                    <span>
+                      Whatever you choose runs fully unattended across every module and screen above —
+                      no per-screen or per-module prompts. New screens are generated fresh either way.
+                      You'll review and Approve &amp; Push each screen individually once the whole
+                      sweep finishes.
+                    </span>
                   </div>
-                  <FeatureFileView key={preview.existing_feature} text={preview.existing_feature} />
-                </div>
-                <div className="sxs-panel">
-                  <div className="sxs-panel-header">
-                    <span className="sxs-icon">{"</>"}</span>
-                    <span>Existing script</span>
-                  </div>
-                  <pre>{preview.existing_script}</pre>
-                </div>
-              </div>
 
-              {!appendMode ? (
-                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                  <button className="primary" onClick={handleReplace}>↻ Replace</button>
-                  <button onClick={() => setAppendMode(true)}>➕ Append</button>
-                  <button className="danger" onClick={handleCancelConflict}>✗ Cancel</button>
-                </div>
-              ) : (
-                <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
-                  <div>
-                    <label className="field-label">What should be added?</label>
-                    <textarea
-                      rows={4}
-                      placeholder="Paste a full scenario you've written, or describe what to add — e.g. &quot;add a scenario for negative amount validation&quot;"
-                      value={appendText}
-                      onChange={(e) => setAppendText(e.target.value)}
-                    />
-                  </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button className="primary" onClick={handleConfirmAppend} disabled={!appendText.trim()}>✓ Append</button>
-                    <button onClick={() => setAppendMode(false)}>← Back</button>
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })()}
-
-        {hasArtifacts && !showConflict && !showSweepConfirm && (
-          <div>
-            <div className="section-header">
-              <span className="section-title">
-                {artifacts.origin === "generate" ? "Generated" : "Fetched"} — review before running
-              </span>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {artifacts.resolved_path && (
-                  <span className="path-pill" title={artifacts.resolved_path}>
-                    {artifacts.resolved_path}
-                  </span>
-                )}
-                {canApprove && artifacts.scope === "module" && (
-                  <>
-                    <button className="primary" onClick={handleApproveAll}>✓ Approve &amp; Push All</button>
-                    <button className="danger" onClick={handleRejectAll}>✗ Reject All</button>
-                  </>
-                )}
-                {phaseInfo && <Badge tone={phaseInfo.tone}>{phaseInfo.label}</Badge>}
-              </div>
-            </div>
-
-            {artifacts.ambiguous && (
-              <div className="alert warning" style={{ marginBottom: 10 }}>
-                More than one close match found — double-check this is the right screen.
-              </div>
-            )}
-
-            {artifacts.scope === "module" && artifacts.screens && (() => {
-              const shortName = (fullName) => fullName.split("/").filter(Boolean).pop() || fullName;
-              const distinctModules = new Set(artifacts.screens.map((s) => s.module).filter(Boolean));
-              const multiModule = distinctModules.size > 1;
-              const displayName = (s) => (multiModule && s.module ? `${s.module} / ${shortName(s.name)}` : shortName(s.name));
-
-              const filtered = artifacts.screens
-                .map((s, i) => ({ s, i }))
-                .filter(({ s }) => displayName(s).toLowerCase().includes(screenQuery.toLowerCase()));
-              const currentName = displayName(artifacts.screens[selectedScreen] || {});
-              return (
-                <div className="screen-picker">
-                  <label className="field-label">Screen ({artifacts.screens.length})</label>
-                  <div className="combobox">
-                    <input
-                      type="text"
-                      className="combobox-input"
-                      placeholder="Search screens..."
-                      title={artifacts.screens[selectedScreen]?.name || ""}
-                      value={screenDropdownOpen ? screenQuery : currentName}
-                      onFocus={() => { setScreenDropdownOpen(true); setScreenQuery(""); }}
-                      onChange={(e) => setScreenQuery(e.target.value)}
-                      onBlur={() => setTimeout(() => setScreenDropdownOpen(false), 120)}
-                    />
-                    {screenDropdownOpen && (
-                      <div className="combobox-list">
-                        {filtered.length === 0 && (
-                          <div className="combobox-empty">No screens match "{screenQuery}"</div>
+                  {(() => {
+                    const allExisting = sweepDiscovery.grand.new === 0;
+                    return (
+                      <>
+                        {!allExisting && (
+                          <p className="hint" style={{ marginBottom: 12 }}>
+                            {sweepDiscovery.grand.new} screen(s) above are new and have no existing tests to
+                            append to — only Replace is available. Append shows up once every queued screen
+                            already has tests.
+                          </p>
                         )}
-                        {filtered.map(({ s, i }) => (
-                          <div
-                            key={`${s.module || ""}:${s.name}`}
-                            className={`combobox-option${i === selectedScreen ? " active" : ""}`}
-                            title={s.name}
-                            onMouseDown={() => {
-                              setSelectedScreen(i);
-                              setScreenDropdownOpen(false);
-                              setScreenQuery("");
-                            }}
-                          >
-                            {displayName(s)}
-                            {s.approved && <span className="edited-badge" style={{ marginLeft: 6 }}>pushed</span>}
+                        {!sweepAppendMode ? (
+                          <div className="btn-row">
+                            <button className="primary" onClick={() => handleStartSweep("replace")}><IconRefresh /> Replace</button>
+                            {allExisting && (
+                              <button onClick={() => setSweepAppendMode(true)}><IconPlus /> Append</button>
+                            )}
+                            <button className="danger" onClick={handleCancelSweep}><IconX /> Cancel</button>
                           </div>
-                        ))}
+                        ) : (
+                          <div className="field-stack">
+                            <div>
+                              <label className="field-label">What should be added to every existing screen?</label>
+                              <textarea
+                                rows={4}
+                                placeholder={"Describe what to add — e.g. \"add a scenario for negative amount validation\" — this same instruction is applied to all existing screens above."}
+                                value={sweepAppendText}
+                                onChange={(e) => setSweepAppendText(e.target.value)}
+                              />
+                            </div>
+                            <div className="btn-row">
+                              <button
+                                className="primary"
+                                onClick={() => handleStartSweep("append", sweepAppendText.trim())}
+                                disabled={!sweepAppendText.trim()}
+                              >
+                                <IconCheck /> Append — start unattended sweep
+                              </button>
+                              <button onClick={() => setSweepAppendMode(false)}><IconArrowLeft /> Back</button>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </section>
+              )}
+
+              {showConflict && (() => {
+                const preview = conflict.conflicts[conflictPreview];
+                return (
+                  <section className="card">
+                    <div className="card-head">
+                      <span className="card-ico"><IconAlert size={18} /></span>
+                      <div className="card-head-text">
+                        <h3 className="card-heading">{preview.name} already has tests in the QC repo</h3>
+                        <p className="card-sub">Compare what exists, then choose how to proceed</p>
+                      </div>
+                    </div>
+
+                    <div className="side-by-side">
+                      <div className="sxs-panel">
+                        <PanelHead icon={<IconFile size={15} />} title="Existing feature file" />
+                        <div className="sxs-body">
+                          <FeatureFileView key={preview.existing_feature} text={preview.existing_feature} />
+                        </div>
+                      </div>
+                      <div className="sxs-panel">
+                        <PanelHead icon={<IconCode size={15} />} title="Existing script" />
+                        <div className="sxs-body">
+                          <CodeView text={preview.existing_script} />
+                        </div>
+                      </div>
+                    </div>
+
+                    {!appendMode ? (
+                      <div className="btn-row">
+                        <button className="primary" onClick={handleReplace}><IconRefresh /> Replace</button>
+                        <button onClick={() => setAppendMode(true)}><IconPlus /> Append</button>
+                        <button className="danger" onClick={handleCancelConflict}><IconX /> Cancel</button>
+                      </div>
+                    ) : (
+                      <div className="field-stack">
+                        <div>
+                          <label className="field-label">What should be added?</label>
+                          <textarea
+                            rows={4}
+                            placeholder={"Paste a full scenario you've written, or describe what to add — e.g. \"add a scenario for negative amount validation\""}
+                            value={appendText}
+                            onChange={(e) => setAppendText(e.target.value)}
+                          />
+                        </div>
+                        <div className="btn-row">
+                          <button className="primary" onClick={handleConfirmAppend} disabled={!appendText.trim()}><IconCheck /> Append</button>
+                          <button onClick={() => setAppendMode(false)}><IconArrowLeft /> Back</button>
+                        </div>
                       </div>
                     )}
-                  </div>
-                </div>
-              );
-            })()}
+                  </section>
+                );
+              })()}
 
-            {(() => {
-              const current = artifacts.scope === "module" && artifacts.screens
-                ? artifacts.screens[selectedScreen]
-                : artifacts;
-              if (!current) return null;
-              const idx = artifacts.scope === "module" ? selectedScreen : 0;
+              {hasArtifacts && !showConflict && !showSweepConfirm && (
+                <section className="card review-card">
+                  {(() => {
+                    const cur = artifacts.scope === "module" && artifacts.screens
+                      ? artifacts.screens[selectedScreen]
+                      : artifacts;
+                    const shownPath = artifacts.resolved_path || cur?.resolved_path;
+                    return (
+                      <div className="card-head review-head">
+                        <span className="card-ico"><IconFile size={18} /></span>
+                        <div className="card-head-text">
+                          <h3 className="card-heading">
+                            {artifacts.origin === "generate" ? "Generated" : "Fetched"} — review before running
+                          </h3>
+                        </div>
+                        {shownPath && (
+                          <span className="path-pill" title={shownPath}>{shownPath}</span>
+                        )}
+                      </div>
+                    );
+                  })()}
 
-              const featureKey  = `${idx}:feature`;
-              const scriptKey   = `${idx}:script`;
-              const featureText = typeof edits[featureKey] === "string" ? edits[featureKey] : current.feature_file;
-              const scriptText  = typeof edits[scriptKey]  === "string" ? edits[scriptKey]  : current.script;
-              const featureEditing = !!editing[featureKey];
-              const scriptEditing  = !!editing[scriptKey];
-
-              const canEdit = artifacts.origin === "generate" && phase === "awaiting_approval";
-              const beginEdit = (key) => setEditing((e) => ({ ...e, [key]: true }));
-              const cancelEdit = (key) => {
-                setEditing((e) => ({ ...e, [key]: false }));
-                setEdits((es) => { const n = { ...es }; delete n[key]; return n; });
-              };
-              const saveEdit = (key, textVal) => {
-                setEdits((es) => ({ ...es, [key]: textVal }));
-                setEditing((e) => ({ ...e, [key]: false }));
-              };
-
-              return (
-                <div className="side-by-side">
-                  <div className="sxs-panel">
-                    <div className="sxs-panel-header">
-                      <span className="sxs-icon">📄</span>
-                      <span>Feature file</span>
-                      {typeof edits[featureKey] === "string" && !featureEditing && (
-                        <span className="edited-badge">edited</span>
-                      )}
-                      {canEdit && !featureEditing ? (
-                        <button
-                          className="panel-edit-btn"
-                          title="Edit feature file"
-                          onClick={() => beginEdit(featureKey)}
-                        >
-                          ✎ Edit
-                        </button>
-                      ) : null}
+                  {artifacts.ambiguous && (
+                    <div className="alert warning" style={{ marginBottom: 12 }}>
+                      <IconAlert size={16} />
+                      <span>More than one close match found — double-check this is the right screen.</span>
                     </div>
-                    {featureEditing ? (
-                      <PanelEditor
-                        initialText={featureText}
-                        onSave={(val) => saveEdit(featureKey, val)}
-                        onCancel={() => cancelEdit(featureKey)}
-                      />
-                    ) : (
-                      <FeatureFileView
-                        key={featureText}
-                        text={featureText}
-                        onOpenScenariosChange={logReadyForHighlight ? setOpenScenarios : undefined}
-                      />
-                    )}
-                  </div>
-                  <div className="sxs-panel">
-                    <div className="sxs-panel-header">
-                      <span className="sxs-icon">{"</>"}</span>
-                      <span>Cypress script</span>
-                      {typeof edits[scriptKey] === "string" && !scriptEditing && (
-                        <span className="edited-badge">edited</span>
-                      )}
-                      {canEdit && !scriptEditing ? (
-                        <button
-                          className="panel-edit-btn"
-                          title="Edit script"
-                          onClick={() => beginEdit(scriptKey)}
-                        >
-                          ✎ Edit
-                        </button>
-                      ) : null}
+                  )}
+
+                  {artifacts.scope === "module" && artifacts.screens && (() => {
+                    const shortName = (fullName) => fullName.split("/").filter(Boolean).pop() || fullName;
+                    const distinctModules = new Set(artifacts.screens.map((s) => s.module).filter(Boolean));
+                    const multiModule = distinctModules.size > 1;
+                    const displayName = (s) => (multiModule && s.module ? `${s.module} / ${shortName(s.name)}` : shortName(s.name));
+
+                    const filtered = artifacts.screens
+                      .map((s, i) => ({ s, i }))
+                      .filter(({ s }) => displayName(s).toLowerCase().includes(screenQuery.toLowerCase()));
+                    const currentName = displayName(artifacts.screens[selectedScreen] || {});
+                    return (
+                      <div className="screen-picker">
+                        <label className="field-label">Screen ({artifacts.screens.length})</label>
+                        <div className="combobox">
+                          <input
+                            type="text"
+                            className="combobox-input"
+                            placeholder="Search screens..."
+                            title={artifacts.screens[selectedScreen]?.name || ""}
+                            value={screenDropdownOpen ? screenQuery : currentName}
+                            onFocus={() => { setScreenDropdownOpen(true); setScreenQuery(""); }}
+                            onChange={(e) => setScreenQuery(e.target.value)}
+                            onBlur={() => setTimeout(() => setScreenDropdownOpen(false), 120)}
+                          />
+                          <span className="combobox-caret"><IconChevronDown size={16} /></span>
+                          {screenDropdownOpen && (
+                            <div className="combobox-list">
+                              {filtered.length === 0 && (
+                                <div className="combobox-empty">No screens match "{screenQuery}"</div>
+                              )}
+                              {filtered.map(({ s, i }) => (
+                                <div
+                                  key={`${s.module || ""}:${s.name}`}
+                                  className={`combobox-option${i === selectedScreen ? " active" : ""}`}
+                                  title={s.name}
+                                  onMouseDown={() => {
+                                    setSelectedScreen(i);
+                                    setScreenDropdownOpen(false);
+                                    setScreenQuery("");
+                                  }}
+                                >
+                                  <span>{displayName(s)}</span>
+                                  {s.approved && <span className="edited-badge">pushed</span>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {(() => {
+                    const current = artifacts.scope === "module" && artifacts.screens
+                      ? artifacts.screens[selectedScreen]
+                      : artifacts;
+                    if (!current) return null;
+                    const idx = artifacts.scope === "module" ? selectedScreen : 0;
+
+                    const featureKey  = `${idx}:feature`;
+                    const scriptKey   = `${idx}:script`;
+                    const featureText = typeof edits[featureKey] === "string" ? edits[featureKey] : current.feature_file;
+                    const scriptText  = typeof edits[scriptKey]  === "string" ? edits[scriptKey]  : current.script;
+                    const featureEditing = !!editing[featureKey];
+                    const scriptEditing  = !!editing[scriptKey];
+
+                    const canEdit = artifacts.origin === "generate" && phase === "awaiting_approval";
+                    const beginEdit = (key) => setEditing((e) => ({ ...e, [key]: true }));
+                    const cancelEdit = (key) => {
+                      setEditing((e) => ({ ...e, [key]: false }));
+                      setEdits((es) => { const n = { ...es }; delete n[key]; return n; });
+                    };
+                    const saveEdit = (key, textVal) => {
+                      setEdits((es) => ({ ...es, [key]: textVal }));
+                      setEditing((e) => ({ ...e, [key]: false }));
+                    };
+
+                    return (
+                      <div className="side-by-side">
+                        <div className="sxs-panel">
+                          <PanelHead icon={<IconFile size={15} />} title="Feature file">
+                            {typeof edits[featureKey] === "string" && !featureEditing && (
+                              <span className="edited-badge">edited</span>
+                            )}
+                            {canEdit && !featureEditing ? (
+                              <button
+                                className="panel-edit-btn"
+                                title="Edit feature file"
+                                onClick={() => beginEdit(featureKey)}
+                              >
+                                <IconEdit size={13} /> Edit
+                              </button>
+                            ) : null}
+                          </PanelHead>
+                          <div className="sxs-body">
+                            {featureEditing ? (
+                              <PanelEditor
+                                initialText={featureText}
+                                onSave={(val) => saveEdit(featureKey, val)}
+                                onCancel={() => cancelEdit(featureKey)}
+                              />
+                            ) : (
+                              <FeatureFileView
+                                key={featureText}
+                                text={featureText}
+                                onOpenScenariosChange={logReadyForHighlight ? setOpenScenarios : undefined}
+                              />
+                            )}
+                          </div>
+                        </div>
+                        <div className="sxs-panel">
+                          <PanelHead icon={<IconCode size={15} />} title="Cypress script">
+                            {typeof edits[scriptKey] === "string" && !scriptEditing && (
+                              <span className="edited-badge">edited</span>
+                            )}
+                            {canEdit && !scriptEditing ? (
+                              <button
+                                className="panel-edit-btn"
+                                title="Edit script"
+                                onClick={() => beginEdit(scriptKey)}
+                              >
+                                <IconEdit size={13} /> Edit
+                              </button>
+                            ) : null}
+                          </PanelHead>
+                          <div className="sxs-body">
+                            {scriptEditing ? (
+                              <PanelEditor
+                                initialText={scriptText}
+                                onSave={(val) => saveEdit(scriptKey, val)}
+                                onCancel={() => cancelEdit(scriptKey)}
+                              />
+                            ) : (
+                              <CodeView text={scriptText} />
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {moduleResult && (
+                    <div className="module-summary">
+                      <p className="card-title">Module run summary</p>
+                      {moduleResult.map((r) => (
+                        <div key={r.name} className="module-summary-row">
+                          <span>{r.name}</span>
+                          <Badge tone={r.passed ? "success" : "danger"}>
+                            {r.passed ? <IconCheck size={12} strokeWidth={2.6} /> : <IconX size={12} strokeWidth={2.6} />}
+                            {r.passed ? "Passed" : "Failed"}
+                          </Badge>
+                        </div>
+                      ))}
                     </div>
-                    {scriptEditing ? (
-                      <PanelEditor
-                        initialText={scriptText}
-                        onSave={(val) => saveEdit(scriptKey, val)}
-                        onCancel={() => cancelEdit(scriptKey)}
-                      />
-                    ) : (
-                      <pre>{scriptText}</pre>
-                    )}
-                  </div>
-                </div>
-              );
-            })()}
-
-            {moduleResult && (
-              <div className="module-summary">
-                <p className="card-title">Module run summary</p>
-                {moduleResult.map((r) => (
-                  <div key={r.name} className="module-summary-row">
-                    <span>{r.name}</span>
-                    <Badge tone={r.passed ? "success" : "danger"}>
-                      {r.passed ? "✓ Passed" : "✗ Failed"}
-                    </Badge>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {(canApprove || canRun || reportAvailable) && (
-              <div style={{ marginTop: 14 }}>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {canApprove && (
-                    <>
-                      <button className="primary" onClick={handleApprove}>✓ Approve and push</button>
-                      <button className="danger" onClick={handleRejectScreen}>✗ Reject</button>
-                    </>
                   )}
-                  {canRun && (
-                    <button className="primary" onClick={handleRun}>▶ Run</button>
-                  )}
-                  {reportAvailable && (
-                    <>
-                      <button className="secondary" onClick={handleReport} title="Download the QC report for the last run (Excel)">📊 Report (Excel)</button>
-                      <button className="secondary" onClick={handleScreenshots} title="Open the screenshot compilation for the last run">🖼 Screenshots</button>
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
 
-        {showLog && (
-          <div>
-            <div className="section-header">
-              <span className="section-title">Run log</span>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {result && (
-                  <Badge tone={result.passed ? "success" : "danger"}>
-                    {result.passed ? "✓ Passed" : "✗ Failed"} · exit {result.exit_code}
-                  </Badge>
-                )}
-                <button className="term-toggle" onClick={() => setLogMaximized((v) => !v)}>
-                  {logMaximized ? "Restore" : "Maximize"}
-                </button>
-              </div>
-            </div>
-
-            <div className={`term${logMaximized ? " maximized" : ""}`} ref={logBoxRef}>
-              {logMaximized && (
-                <button
-                  className="term-toggle"
-                  onClick={() => setLogMaximized(false)}
-                  style={{ position: "sticky", top: 0, float: "right", marginBottom: 8, zIndex: 101 }}
-                >
-                  ✕ Close
-                </button>
+                  {(canApprove || canRun || reportAvailable) && (
+                    <div className="action-bar">
+                      <div className="action-group">
+                        {canApprove && (
+                          <>
+                            <button className="approve" onClick={handleApprove}><IconCheck /> Approve and push</button>
+                            <button className="danger solid" onClick={handleRejectScreen}><IconX /> Reject</button>
+                          </>
+                        )}
+                        {canRun && (
+                          <button className="primary" onClick={handleRun}><IconPlay size={14} /> Run</button>
+                        )}
+                      </div>
+                      <div className="action-group end">
+                        {canApprove && artifacts.scope === "module" && (
+                          <>
+                            <button className="primary" onClick={handleApproveAll}><IconCheck /> Approve &amp; push all</button>
+                            <button className="danger" onClick={handleRejectAll}><IconX /> Reject all</button>
+                          </>
+                        )}
+                        {reportAvailable && (
+                          <>
+                            <button className="secondary" onClick={handleReport} title="Download the QC report for the last run (Excel)"><IconSheet /> Report (Excel)</button>
+                            <button className="secondary" onClick={handleScreenshots} title="Open the screenshot compilation for the last run"><IconImage /> Screenshots</button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </section>
               )}
-              {lines.map((l) => (
-                <div key={l.id}
-                  className={`term-line${TABLE_RE.test(l.text) ? " is-table" : ""}${highlightedLineIds.has(l.id) ? " highlighted" : ""}`}
-                  style={{ color: TERM_TONE[l.tone] || TERM_TONE.secondary }}>
-                  {l.text}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
 
-      </main>
+              {showLog && (
+                <section className={`log-card${logMaximized ? " maximized" : ""}`}>
+                  <div className="log-head">
+                    <span className="traffic" aria-hidden="true"><i /><i /><i /></span>
+                    <span className="log-title">{hasArtifacts || busy ? "Live execution log" : "Run log"}</span>
+                    <span className="log-spacer" />
+                    {result && (
+                      <Badge tone={result.passed ? "success" : "danger"}>
+                        {result.passed ? "Passed" : "Failed"} · exit {result.exit_code}
+                      </Badge>
+                    )}
+                    {busy && <span className="streaming"><span className="pulse" />Streaming…</span>}
+                    <button className="term-toggle" onClick={() => setLogMaximized((v) => !v)}>
+                      {logMaximized ? <IconMinimize size={13} /> : <IconMaximize size={13} />}
+                      {logMaximized ? "Restore" : "Maximize"}
+                    </button>
+                  </div>
+
+                  <div className="term" ref={logBoxRef}>
+                    {lines.map((l) => (
+                      <div key={l.id}
+                        className={`term-line${TABLE_RE.test(l.text) ? " is-table" : ""}${highlightedLineIds.has(l.id) ? " highlighted" : ""}`}
+                        style={{ color: TERM_TONE[l.tone] || TERM_TONE.secondary }}>
+                        {l.text}
+                      </div>
+                    ))}
+                    {busy && <span className="term-cursor" />}
+                  </div>
+                </section>
+              )}
+
+            </main>
           </div>
         </div>
       </div>

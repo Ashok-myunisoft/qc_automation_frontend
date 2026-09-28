@@ -55,7 +55,13 @@ export default function Sidebar({ view, setView, envConfirmed, onOpenEnv, connec
     <aside className={`sidebar${collapsed ? " collapsed" : ""}`}>
       <div className="sidebar-top">
         <div className="sidebar-brand">
-          <div className="sidebar-logo">GB</div>
+          <div className="sidebar-logo" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2.5 20.5 7v10L12 21.5 3.5 17V7z" />
+              <circle cx="12" cy="12" r="3.2" />
+              <path d="m14.4 14.4 2.6 2.6" />
+            </svg>
+          </div>
           <div className="sidebar-brand-text">
             <div className="sidebar-title">QC Test Console</div>
             <div className="sidebar-sub">GoodBooks ERP</div>

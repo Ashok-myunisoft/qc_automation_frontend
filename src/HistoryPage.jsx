@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { IconCheck, IconClock, IconDownload, IconImage, IconRefresh, IconSheet, IconX } from "./icons";
 
 // The History page talks to the backend over plain HTTP (GET services).
 // The base URL is derived from the same address the WebSocket uses, so
@@ -11,10 +12,7 @@ const SOURCE_LABEL = { fetch: "Fetch → Run", generate: "Generate → Run", aut
 
 function fmtDate(iso) {
   if (!iso) return "—";
-  // The backend stores UTC. Older rows arrive without a timezone marker, which
-  // the browser would read as local time, so mark them as UTC first.
-  const hasZone = /[zZ]$|[+-]\d\d:?\d\d$/.test(iso);
-  const d = new Date(hasZone ? iso : `${iso}Z`);
+  const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleString(undefined, {
     day: "2-digit", month: "short", year: "numeric",
@@ -35,7 +33,6 @@ function saveBlob(blob, filename) {
 
 export default function HistoryPage({ apiBase }) {
   const [rows, setRows] = useState(null);
-  const [jobs, setJobs] = useState([]); // queued / running / failed background runs
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState(null); // {html, filename}
@@ -48,12 +45,6 @@ export default function HistoryPage({ apiBase }) {
       const data = await res.json();
       setRows(data.items || []);
       setError(null);
-      try {
-        const jr = await fetch(`${apiBase}/api/jobs`);
-        if (jr.ok) setJobs((await jr.json()).items || []);
-      } catch {
-        /* older backend without /api/jobs - History alone still works */
-      }
     } catch (e) {
       setError(`Could not load history (${e.message}). Is the backend running?`);
     } finally {
@@ -61,26 +52,11 @@ export default function HistoryPage({ apiBase }) {
     }
   }, [apiBase]);
 
-  const hasLive = jobs.some((j) => j.status === "queued" || j.status === "running");
-
   useEffect(() => {
     load();
-    // Refresh faster while something is running so progress and the finished
-    // run show up quickly; relax to 15s when idle.
-    const t = setInterval(load, hasLive ? 4000 : 15000);
+    const t = setInterval(load, 15000); // pick up runs that finish while this page is open
     return () => clearInterval(t);
-  }, [load, hasLive]);
-
-  const cancelJob = async (job) => {
-    if (!window.confirm("Cancel this run? It will be stopped and nothing will be saved.")) return;
-    try {
-      const res = await fetch(`${apiBase}/api/jobs/${job.id}/cancel`, { method: "POST" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await load();
-    } catch (e) {
-      setError(`Could not cancel the run (${e.message}).`);
-    }
-  };
+  }, [load]);
 
   const downloadReport = async (row) => {
     try {
@@ -115,8 +91,8 @@ export default function HistoryPage({ apiBase }) {
             <div className="preview-header">
               <div className="preview-title">Screenshots — preview</div>
               <div className="preview-actions">
-                <button className="secondary" onClick={downloadPreview}>⬇ Download</button>
-                <button className="secondary" onClick={() => setPreview(null)}>✕ Close</button>
+                <button className="secondary" onClick={downloadPreview}><IconDownload /> Download</button>
+                <button className="secondary" onClick={() => setPreview(null)}><IconX /> Close</button>
               </div>
             </div>
             <iframe className="preview-iframe" title={preview.filename} srcDoc={preview.html} sandbox="allow-same-origin" />
@@ -127,20 +103,20 @@ export default function HistoryPage({ apiBase }) {
       <div className="section-header">
         <span className="section-title">Run history</span>
         <button className="secondary" onClick={load} disabled={loading}>
-          {loading ? "Refreshing…" : "↻ Refresh"}
+          <IconRefresh /> {loading ? "Refreshing…" : "Refresh"}
         </button>
       </div>
 
       {error && <div className="alert danger" style={{ marginBottom: 12 }}>{error}</div>}
 
-      {rows && rows.length === 0 && jobs.length === 0 && !error && (
+      {rows && rows.length === 0 && !error && (
         <div className="empty-state">
-          <div className="empty-state-icon">🕘</div>
+          <div className="empty-state-icon"><IconClock size={22} /></div>
           <p>No runs yet.<br />Every run you make will appear here with its report and screenshots.</p>
         </div>
       )}
 
-      {rows && (rows.length > 0 || jobs.length > 0) && (
+      {rows && rows.length > 0 && (
         <div className="history-table-wrap">
           <table className="history-table">
             <thead>
@@ -153,32 +129,7 @@ export default function HistoryPage({ apiBase }) {
               </tr>
             </thead>
             <tbody>
-              {jobs.map((j) => (
-                <tr key={`job-${j.id}`}>
-                  <td className="nowrap">{fmtDate(j.started_at)}</td>
-                  <td>
-                    <div className="history-main">{j.module || "—"}</div>
-                    <div className="history-sub" title={j.screen}>{j.screen || ""}</div>
-                  </td>
-                  <td><span className="badge muted">{SOURCE_LABEL[j.source] || j.source}</span></td>
-                  <td>
-                    <span className={`badge ${j.status === "failed" ? "danger" : j.status === "queued" ? "muted" : "accent"}`}>
-                      {j.status === "failed" ? "✗ Run failed" : j.status === "queued" ? "◔ Queued" : "● Running…"}
-                    </span>
-                    <div className="history-sub" title={j.last_log}>
-                      {j.status === "failed" ? j.last_log : (j.progress || j.last_log || "")}
-                    </div>
-                  </td>
-                  <td className="right nowrap">
-                    {j.status === "failed" ? (
-                      <span className="history-sub">No report — nothing was produced</span>
-                    ) : (
-                      <button className="danger" onClick={() => cancelJob(j)}>✕ Cancel</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {(rows || []).map((r) => (
+              {rows.map((r) => (
                 <tr key={r.id}>
                   <td className="nowrap">{fmtDate(r.created_at)}</td>
                   <td>
@@ -188,13 +139,14 @@ export default function HistoryPage({ apiBase }) {
                   <td><span className="badge muted">{SOURCE_LABEL[r.source] || r.source}</span></td>
                   <td>
                     <span className={`badge ${r.status === "passed" ? "success" : r.status === "failed" ? "danger" : "warning"}`}>
-                      {r.status === "passed" ? "✓ Passed" : r.status === "failed" ? "✗ Failed" : "◐ Partial"}
+                      {r.status === "passed" ? <IconCheck size={12} strokeWidth={2.6} /> : r.status === "failed" ? <IconX size={12} strokeWidth={2.6} /> : null}
+                      {r.status === "passed" ? "Passed" : r.status === "failed" ? "Failed" : "Partial"}
                     </span>
                     <div className="history-sub">{r.passed_count}/{r.total} screen(s) passed</div>
                   </td>
                   <td className="right nowrap">
-                    <button className="secondary" disabled={!r.has_report} onClick={() => downloadReport(r)}>📊 Report</button>{" "}
-                    <button className="secondary" disabled={!r.has_screenshots} onClick={() => openScreenshots(r)}>🖼 Screenshots</button>
+                    <button className="secondary" disabled={!r.has_report} onClick={() => downloadReport(r)}><IconSheet /> Report</button>{" "}
+                    <button className="secondary" disabled={!r.has_screenshots} onClick={() => openScreenshots(r)}><IconImage /> Screenshots</button>
                   </td>
                 </tr>
               ))}
