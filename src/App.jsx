@@ -905,13 +905,6 @@ export default function App() {
               >
                 ⚡ Start auto-run
               </button>
-
-              <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                Generates every screen, pushes it to GitLab, runs Cypress and builds the
-                report — all on its own, no prompts. Existing screens are replaced. Keep
-                this tab open until it finishes, then download the Excel report and
-                screenshots.
-              </div>
             </div>
           )}
         </div>
