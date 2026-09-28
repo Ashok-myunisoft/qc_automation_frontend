@@ -108,48 +108,6 @@ function matchScenarioLines(prefix, lines) {
   return ids;
 }
 
-const STEP_RE = /^(Given|When|Then|And|But|\*)(\s.*)?$/;
-
-// Renders one scenario body as numbered Given / When / Then rows.
-// Presentation only — the raw text is exactly what the backend sent.
-function GherkinBody({ body }) {
-  const rows = (body || "")
-    .split("\n")
-    .filter((l) => l.trim() !== "");
-  let n = 0;
-  let lastKw = "";
-  return (
-    <div className="gherkin">
-      {rows.map((raw, i) => {
-        n += 1;
-        const trimmed = raw.trim();
-        const m = trimmed.match(STEP_RE);
-        if (m) {
-          const kw = m[1];
-          const kind = kw === "And" || kw === "But" || kw === "*" ? lastKw || "and" : kw.toLowerCase();
-          if (kw !== "And" && kw !== "But" && kw !== "*") lastKw = kw.toLowerCase();
-          const cls = kw === "And" || kw === "But" || kw === "*" ? `kw kw-${kind} kw-soft` : `kw kw-${kind}`;
-          return (
-            <div className="g-row" key={i}>
-              <span className="g-num">{n}</span>
-              <span className={cls}>{kw === "*" ? "•" : kw}</span>
-              <span className="g-text">{(m[2] || "").trim()}</span>
-            </div>
-          );
-        }
-        // tables, Examples:, doc-strings, comments — keep indentation as written
-        const indent = raw.length - raw.trimStart().length;
-        return (
-          <div className="g-row g-plain" key={i}>
-            <span className="g-num">{n}</span>
-            <span className="g-raw" style={{ paddingLeft: Math.min(indent, 24) * 4 }}>{trimmed}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 function FeatureFileView({ text, onOpenScenariosChange }) {
   const { header, scenarios } = useMemo(() => parseFeature(text), [text]);
   const [openSet, setOpenSet] = useState(() => new Set());
@@ -162,9 +120,6 @@ function FeatureFileView({ text, onOpenScenariosChange }) {
       return next;
     });
   };
-  const allOpen = scenarios.length > 0 && openSet.size === scenarios.length;
-  const toggleAll = () =>
-    setOpenSet(allOpen ? new Set() : new Set(scenarios.map((_, i) => i)));
 
   useEffect(() => {
     if (!onOpenScenariosChange) return;
@@ -182,33 +137,21 @@ function FeatureFileView({ text, onOpenScenariosChange }) {
   return (
     <div className="feature-view">
       {header.trim() && <pre className="feature-header">{header.trim()}</pre>}
-      <div className="feature-toolbar">
-        <span>{scenarios.length} scenario{scenarios.length === 1 ? "" : "s"}</span>
-        <button type="button" className="link-btn" onClick={toggleAll}>
-          {allOpen ? "Collapse all" : "Expand all"}
-        </button>
-      </div>
       {scenarios.map((sc, idx) => {
         const isOpen = openSet.has(idx);
-        const title = sc.title.replace(/^Scenario( Outline)?:\s*/, "");
-        const isOutline = /^Scenario Outline:/.test(sc.title);
         return (
-          <div key={idx} className={`scenario-card${isOpen ? " open" : ""}`}>
+          <div key={idx} className={`scenario-row${isOpen ? " open" : ""}`}>
             <button
               type="button"
-              className="scenario-head"
+              className="scenario-row-head"
               onClick={() => toggle(idx)}
               aria-expanded={isOpen}
             >
-              <span className="scenario-chev"><IconChevronRight size={14} /></span>
-              <span className="scenario-index">{idx + 1}</span>
-              <span className="scenario-title">
-                <span className="scenario-kind">{isOutline ? "Scenario Outline" : "Scenario"}</span>
-                {title}
-              </span>
+              <span className="scenario-caret">{isOpen ? "\u25BE" : "\u25B8"}</span>
+              <span className="scenario-row-title">{sc.title}</span>
               {sc.tag && <span className="scenario-tag">{sc.tag}</span>}
             </button>
-            {isOpen && <GherkinBody body={sc.body} />}
+            {isOpen && <pre className="scenario-row-body">{sc.body.replace(/^\n+|\s+$/g, "")}</pre>}
           </div>
         );
       })}
@@ -282,30 +225,6 @@ function PanelHead({ icon, title, meta, children }) {
       <span className="sxs-spacer" />
       {children}
     </div>
-  );
-}
-
-const STEP_LABELS = ["Target", "Generate", "Review", "Cypress run", "Report"];
-
-function Stepper({ current, allDone, secondLabel }) {
-  const labels = STEP_LABELS.map((l, i) => (i === 1 ? secondLabel : l));
-  return (
-    <ol className="stepper" aria-label="Progress">
-      {labels.map((label, i) => {
-        const done = allDone || i < current;
-        const active = !allDone && i === current;
-        return (
-          <li
-            key={label}
-            className={`step${done ? " done" : ""}${active ? " active" : ""}`}
-            aria-current={active ? "step" : undefined}
-          >
-            <span className="step-dot">{done ? <IconCheck size={14} strokeWidth={2.6} /> : i + 1}</span>
-            <span className="step-label">{label}</span>
-          </li>
-        );
-      })}
-    </ol>
   );
 }
 
@@ -854,12 +773,6 @@ export default function App() {
     : "";
   const crumb = hasArtifacts ? (crumbScreen || screen.trim()) : "";
 
-  let stepCurrent = 0;
-  if (phase === "running") stepCurrent = 3;
-  else if (phase === "done") stepCurrent = 4;
-  else if (phase === "resolving" || phase === "sweeping" || phase === "auto_running") stepCurrent = 1;
-  else if (hasArtifacts || showConflict || showSweepConfirm) stepCurrent = 2;
-
   return (
     <>
       {preview && (
@@ -931,14 +844,6 @@ export default function App() {
 
           <div className="dashboard" style={{ display: view === "dashboard" ? undefined : "none" }}>
 
-            <div className="stepper-wrap">
-              <Stepper
-                current={stepCurrent}
-                allDone={phase === "done"}
-                secondLabel={mode === "fetch" ? "Fetch" : "Generate"}
-              />
-            </div>
-
             <aside className="left-panel">
 
               <section className="card">
@@ -946,7 +851,6 @@ export default function App() {
                   <span className="card-ico"><IconTarget size={18} /></span>
                   <div className="card-head-text">
                     <h3 className="card-heading">Scope</h3>
-                    <p className="card-sub">Select the scope for test generation</p>
                   </div>
                 </div>
                 <div className="segmented">
@@ -966,9 +870,6 @@ export default function App() {
                   <span className="card-ico"><IconBox size={18} /></span>
                   <div className="card-head-text">
                     <h3 className="card-heading">{scope === "module" ? "Target modules" : "Target screen"}</h3>
-                    <p className="card-sub">
-                      {scope === "module" ? "Add the ERP modules to work on" : "Choose the module and screen"}
-                    </p>
                   </div>
                 </div>
                 <div className="field-stack">
@@ -1027,7 +928,6 @@ export default function App() {
                   <span className="card-ico"><IconPlayCircle size={18} /></span>
                   <div className="card-head-text">
                     <h3 className="card-heading">Actions</h3>
-                    <p className="card-sub">Fetch existing tests, generate new ones, or run everything</p>
                   </div>
                 </div>
 
@@ -1085,8 +985,6 @@ export default function App() {
                     >
                       <IconBolt /> Start auto-run
                     </button>
-                    <p className="hint">
-                    </p>
                   </div>
                 )}
 
