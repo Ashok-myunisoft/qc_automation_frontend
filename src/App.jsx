@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import Sidebar from "./Sidebar";
+import HistoryPage, { apiBaseFromWs } from "./HistoryPage";
 
 const WS_URL = "ws://localhost:8000/ws/qc";
 
@@ -215,6 +217,7 @@ function EnvDrawer({ envDraft, setEnvDraft, onSave, onClose }) {
 }
 
 export default function App() {
+  const [view, setView]       = useState("dashboard"); // "dashboard" | "history"
   const [scope, setScope]     = useState("screen");
   const [mode, setMode]       = useState("fetch");
   const [moduleName, setModuleName] = useState("");
@@ -738,37 +741,24 @@ export default function App() {
         />
       )}
 
-      <header className="topbar">
-        <div className="topbar-brand">
-          <button
-            type="button"
-            className="topbar-env-toggle"
-            onClick={handleToggleEnvMenu}
-            aria-expanded={envMenuOpen}
-            title={envConfirmed ? `${envConfirmed.baseUrl} (${envConfirmed.userName})` : "Test environment — not set"}
-          >
-            <span className="hamburger-icon">
-              <span />
-              <span />
-              <span />
-            </span>
-            <span
-              className="env-status-dot"
-              style={{ background: envConfirmed ? "var(--text-success)" : "var(--text-warning, #f59e0b)" }}
-            />
-          </button>
-          <div className="topbar-logo">GB</div>
-          <span className="topbar-title">QC Test Console</span>
-          <span className="topbar-sub">GoodBooks ERP</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {phaseInfo && <Badge tone={phaseInfo.tone}>{phaseInfo.label}</Badge>}
-          <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "var(--text-muted)" }}>
-            <span className="conn-dot" style={{ background: connected ? "var(--text-success)" : "var(--text-danger)" }} />
-            {connected ? "Connected" : "Disconnected"}
-          </span>
-        </div>
-      </header>
+      <div className="app-shell">
+        <Sidebar
+          view={view}
+          setView={setView}
+          envConfirmed={envConfirmed}
+          onOpenEnv={handleToggleEnvMenu}
+          connected={connected}
+        />
+
+        <div className="content">
+          <div className="page-header">
+            <span className="page-title">{view === "history" ? "History" : "Dashboard"}</span>
+            {view === "dashboard" && phaseInfo && <Badge tone={phaseInfo.tone}>{phaseInfo.label}</Badge>}
+          </div>
+
+          {view === "history" && <HistoryPage apiBase={apiBaseFromWs(WS_URL)} />}
+
+          <div className="dashboard" style={{ display: view === "dashboard" ? undefined : "none" }}>
 
       <aside className="left-panel">
 
@@ -1339,6 +1329,9 @@ export default function App() {
         )}
 
       </main>
+          </div>
+        </div>
+      </div>
     </>
   );
 }
