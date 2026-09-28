@@ -93,13 +93,18 @@ body {
 /* ── DASHBOARD GRID ────────────────────────────────────────────── */
 .dashboard {
   display: grid;
-  grid-template-columns: 360px minmax(0, 1fr);
+  /* Left column gives way when the sidebar is expanded so the feature file
+     and script panels keep (almost) the same large size either way. */
+  grid-template-columns: 250px minmax(0, 1fr);
   grid-template-rows: auto;
+  transition: grid-template-columns .2s ease;
   gap: 20px;
   padding: 22px 28px 32px;
   flex: 1; min-width: 0;
   align-items: start;
 }
+.app-shell:has(.sidebar.collapsed) .dashboard { grid-template-columns: 360px minmax(0, 1fr); }
+.left-panel .segmented.three .seg-btn { padding: 0 4px; font-size: 12.5px; white-space: nowrap; }
 .left-panel  { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .right-panel { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
 
@@ -109,7 +114,7 @@ body {
   border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
   padding: 18px;
 }
-.card-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 16px; }
+.card-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .card-ico {
   width: 36px; height: 36px; border-radius: 10px; flex: none;
   display: flex; align-items: center; justify-content: center;
@@ -553,7 +558,8 @@ button.primary:disabled, button.approve:disabled { box-shadow: none; }
   .side-by-side { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 1080px) {
-  .dashboard { grid-template-columns: minmax(0, 1fr); }
+  .dashboard,
+  .app-shell:has(.sidebar.collapsed) .dashboard { grid-template-columns: minmax(0, 1fr); }
   .step-label { font-size: 11.5px; }
 }
 
