@@ -9,6 +9,21 @@ import {
 } from "./icons";
 
 const WS_URL = "ws://localhost:8000/ws/qc";
+const API_BASE = apiBaseFromWs(WS_URL);
+
+// Identifies this browser page to the backend. It stays the same across automatic reconnects,
+// so the backend can hand the same session (and any run still in progress) back to us.
+const CLIENT_ID =
+  (typeof crypto !== "undefined" && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
+const HEARTBEAT_MS   = 15000; // ping the backend this often while connected
+const PONG_TIMEOUT_MS = 20000; // we pinged and got nothing back for this long => the socket is really dead, reconnect
+const MAX_BACKOFF_MS = 10000;
+const DOWN_AFTER_MS  = 15000; // only if we are still not back after this long does the pill say "Disconnected"
+const FIRST_CONNECT_MS = 4000; // on page load: how long to wait for the first connection before saying "Disconnected"
+const QUEUE_MAX_MS   = 8000;  // a click made during a drop is held this long and sent when we reconnect
 
 const PHASE_LABELS = {
   idle:               null,
@@ -19,7 +34,7 @@ const PHASE_LABELS = {
   awaiting_conflict:  { label: "Needs a decision",   tone: "warning"  },
   awaiting_sweep_confirm: { label: "Ready to sweep", tone: "warning"  },
   sweeping:           { label: "Sweeping (unattended)", tone: "accent" },
-  auto_running:       { label: "Auto-run (unattended)", tone: "accent" },
+  auto_running:       { label: "Auto (unattended)", tone: "accent" },
   not_found:          { label: "Not found",          tone: "danger"   },
   done:               { label: "Done",               tone: "success"  },
 };
@@ -184,13 +199,75 @@ function highlightJs(line) {
 function CodeView({ text, plain }) {
   const lines = useMemo(() => (text || "").replace(/\s+$/, "").split("\n"), [text]);
   return (
-    <div className="code-view">
+    <div className={`code-view${plain ? " plain" : ""}`}>
       {lines.map((l, i) => (
         <div className="c-row" key={i}>
           <span className="c-num">{i + 1}</span>
           <span className="c-text">{plain ? l || " " : (l ? highlightJs(l) : " ")}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+// Moon icon for the Overnight Run button (defined here so icons.jsx stays unchanged).
+const IconMoon = ({ size = 16 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="ico">
+    <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+  </svg>
+);
+
+function formatDuration(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${r}s`;
+  return `${r}s`;
+}
+
+const catKey = (s) => (s || "").trim().toLowerCase();
+
+// A text box with a dropdown of suggestions. You can pick one OR type any name freely.
+function PickOrType({ value, onChange, options, placeholder, disabled, onPick, onKeyDown, onBlur }) {
+  const [open, setOpen] = useState(false);
+  const q = catKey(value);
+  const shown = (options || []).filter((o) => catKey(o).includes(q)).slice(0, 200);
+  return (
+    <div className="combobox">
+      <input
+        type="text"
+        className="combobox-input"
+        placeholder={placeholder}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => { onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={onKeyDown}
+        onBlur={() => { setTimeout(() => setOpen(false), 120); if (onBlur) onBlur(); }}
+      />
+      <span className="combobox-caret"><IconChevronDown size={16} /></span>
+      {open && !disabled && shown.length > 0 && (
+        <div className="combobox-list">
+          {shown.map((o) => (
+            <div
+              key={o}
+              className="combobox-option"
+              title={o}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onChange(o);
+                if (onPick) onPick(o);
+                setOpen(false);
+              }}
+            >
+              <span>{o}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -207,6 +284,7 @@ function PanelEditor({ initialText, onSave, onCancel }) {
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         spellCheck={false}
+        wrap="off"
       />
       <div className="panel-editor-actions">
         <button className="secondary" onClick={onCancel}>Cancel</button>
@@ -225,6 +303,88 @@ function PanelHead({ icon, title, meta, children }) {
       <span className="sxs-spacer" />
       {children}
     </div>
+  );
+}
+
+// A feature / script panel with a Maximize / Restore button (same idea as the log panel).
+// Maximizing only adds a CSS class (see .sxs-panel.maximized in index.css), so nothing inside
+// the panel is re-created: opened scenarios, scroll position and an open editor are kept.
+// Esc or a click on the dark backdrop also restores it.
+function SxsPanel({ icon, title, headExtras, children }) {
+  const [maximized, setMaximized] = useState(false);
+
+  useEffect(() => {
+    if (!maximized) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") setMaximized(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [maximized]);
+
+  return (
+    <>
+      {maximized && <div className="sxs-backdrop" onClick={() => setMaximized(false)} />}
+      <div className={`sxs-panel${maximized ? " maximized" : ""}`}>
+        <PanelHead icon={icon} title={title}>
+          {headExtras}
+          <button
+            type="button"
+            className="panel-edit-btn"
+            title={maximized ? "Restore (Esc)" : "Maximize"}
+            onClick={() => setMaximized((v) => !v)}
+          >
+            {maximized ? <IconMinimize size={13} /> : <IconMaximize size={13} />}
+            {maximized ? "Restore" : "Maximize"}
+          </button>
+        </PanelHead>
+        <div className="sxs-body">{children}</div>
+      </div>
+    </>
+  );
+}
+
+// The Cypress script is NOT shown inline. It sits behind one small button; clicking the button
+// opens it as a maximized overlay (Esc / backdrop / Close dismisses it). The panel stays mounted
+// while closed (hidden by CSS), so an open editor and its unsaved draft survive open/close.
+function ScriptPopup({ title, launcherExtras, headExtras, children }) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  return (
+    <>
+      <div className="script-launch-row">
+        <button
+          type="button"
+          className="script-launch-btn"
+          title="Open the Cypress script (full screen)"
+          onClick={() => setOpen(true)}
+        >
+          <IconCode size={14} /> View {title}
+          <IconMaximize size={12} />
+        </button>
+        {launcherExtras}
+      </div>
+      {open && <div className="sxs-backdrop" onClick={() => setOpen(false)} />}
+      <div className={`sxs-panel popup${open ? " maximized" : ""}`}>
+        <PanelHead icon={<IconCode size={15} />} title={title}>
+          {headExtras}
+          <button
+            type="button"
+            className="panel-edit-btn"
+            title="Close (Esc)"
+            onClick={() => setOpen(false)}
+          >
+            <IconMinimize size={13} /> Close
+          </button>
+        </PanelHead>
+        <div className="sxs-body">{children}</div>
+      </div>
+    </>
   );
 }
 
@@ -283,6 +443,9 @@ export default function App() {
   const [moduleResult, setModuleResult] = useState(null);
   const [lines, setLines]   = useState([]);
   const [connected, setConnected] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [hasConnected, setHasConnected] = useState(false); // true after the first successful connect
+  const [linkLevel, setLinkLevel] = useState("ok");        // "ok" | "down" - "down" only after being offline for DOWN_AFTER_MS
   const [logMaximized, setLogMaximized] = useState(false);
   const [artifacts, setArtifacts] = useState(null);
   const [selectedScreen, setSelectedScreen] = useState(0);
@@ -320,9 +483,38 @@ export default function App() {
   const [envDraft, setEnvDraft] = useState({ baseUrl: "", dbName: "", userName: "", password: "" });
   const [envConfirmed, setEnvConfirmed] = useState(null);
 
+  // Live list of modules / screens from the repo (for the dropdowns).
+  const [catalog, setCatalog] = useState([]);            // [{module, screens:[...]}]
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState("");
+
+  // Refine box (review stage).
+  const [refineText, setRefineText] = useState("");
+  const [refining, setRefining] = useState(false);
+
+  // Overnight run.
+  const [overnightModules, setOvernightModules] = useState([]);
+  const [overnightDraft, setOvernightDraft] = useState("");
+  const [overnightConfirm, setOvernightConfirm] = useState(false);
+  const [overnightSummary, setOvernightSummary] = useState(null);
+
+  const refineSelRef = useRef(0); // which screen was selected when Apply was clicked
   const wsRef        = useRef(null);
+  const pendingSendsRef = useRef([]); // actions clicked while the socket was briefly down
+  const phaseRef     = useRef("idle"); // latest phase, readable from the long-lived socket handlers
+  const runStartingRef = useRef(false); // true from the Run click until the backend answers
   const logBoxRef    = useRef(null);
   const lineIdRef    = useRef(0);
+
+  phaseRef.current = phase;
+
+  // The pill is binary: "Connected" or "Disconnected". Reconnecting happens silently in the
+  // background; "Disconnected" only appears if we are still offline after DOWN_AFTER_MS.
+  useEffect(() => {
+    if (connected) { setLinkLevel("ok"); return undefined; }
+    const t = setTimeout(() => setLinkLevel("down"), hasConnected ? DOWN_AFTER_MS : FIRST_CONNECT_MS);
+    return () => clearTimeout(t);
+  }, [connected, hasConnected]);
 
   const log = (text, tone) => {
     setLines((prev) => {
@@ -355,14 +547,55 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openScenarios]);
 
+  // ------------------------------------------------------------------
+  // Backend connection. One socket at a time; if it drops (network blip, sleep, proxy idle
+  // timeout, backend restart) it reconnects by itself with a short back-off, sends a heartbeat
+  // while open, and treats a silent socket as dead. Handlers of an old socket are ignored.
+  // ------------------------------------------------------------------
   useEffect(() => {
-    const ws = new WebSocket(WS_URL);
-    wsRef.current = ws;
-    ws.onopen  = () => setConnected(true);
-    ws.onclose = () => setConnected(false);
-    ws.onerror = () => setConnected(false);
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
+    let ws = null;
+    let disposed = false;
+    let retry = 0;
+    let retryTimer = null;
+    let heartbeatTimer = null;
+    let lastHeardAt = Date.now();
+    let lastPingAt = 0;           // when we last sent a heartbeat ping (0 = none outstanding yet)
+    let everConnected = false;
+    let reconnectPending = false; // the next "resumed" message belongs to a reconnect
+    let flushedQueued = false;    // actions held during the drop were just sent on this connection
+
+    const handleMessage = (msg) => {
+      if (msg.type === "pong") return; // heartbeat reply
+      if (msg.type === "resumed") {
+        setRefining(false);
+        // First message after every (re)connect: tells us what the backend still has for us.
+        if (reconnectPending) {
+          reconnectPending = false;
+          const busyPhases = ["resolving", "running", "sweeping", "auto_running"];
+          const p = phaseRef.current;
+          if (msg.job_active || msg.replaying > 0) {
+            log("reconnected to the backend - the run is still going, catching up...", "accent");
+          } else if (flushedQueued) {
+            log("reconnected to the backend.", "muted"); // the click made during the drop is being sent now
+          } else if (msg.fresh && p !== "idle") {
+            // The backend lost this session (it restarted, or the session expired).
+            runStartingRef.current = false;
+            resetRun();
+            setPhase("idle");
+            setAlert({ message: "The connection to the backend was lost and its session is gone, so whatever was pending was cleared. Please start again.", tone: "danger" });
+          } else if (busyPhases.includes(p)) {
+            runStartingRef.current = false;
+            setPhase("idle");
+            setAlert({ message: "The connection dropped while this step was running, so it was stopped. Please start it again.", tone: "danger" });
+          } else {
+            log("reconnected to the backend.", "muted");
+          }
+        }
+        return;
+      }
+      if (msg.type === "log" || msg.type === "status") {
+        runStartingRef.current = false; // backend has accepted the run
+      }
       if (msg.type === "log") {
         log(msg.text, msg.tone);
       } else if (msg.type === "status") {
@@ -425,12 +658,152 @@ export default function App() {
         setEnvConfirmed({ baseUrl: msg.baseUrl, dbName: msg.dbName, userName: msg.userName });
         setEnvMenuOpen(false);
         setAlert(null);
+      } else if (msg.type === "catalog") {
+        setCatalog(Array.isArray(msg.modules) ? msg.modules : []);
+        setCatalogError(msg.error ? String(msg.error) : "");
+        setCatalogLoading(false);
+      } else if (msg.type === "refine_done") {
+        const sel = refineSelRef.current || 0;
+        setRefining(false);
+        setSelectedScreen(sel);
+        if (msg.changed) {
+          setEdits((es) => {
+            const n = { ...es };
+            delete n[`${sel}:feature`];
+            delete n[`${sel}:script`];
+            return n;
+          });
+          setEditing((e) => ({ ...e, [`${sel}:feature`]: false, [`${sel}:script`]: false }));
+          setRefineText("");
+        }
+      } else if (msg.type === "overnight_summary") {
+        setOvernightSummary(msg);
       } else if (msg.type === "error") {
+        setRefining(false);
+        setCatalogLoading(false);
         log(msg.message, "danger");
         setAlert({ message: msg.message, tone: "danger" });
+        if (runStartingRef.current) {
+          // The run never started: put the Run button back.
+          runStartingRef.current = false;
+          setPhase("awaiting_review");
+        }
       }
     };
-    return () => ws.close();
+
+    const stopHeartbeat = () => {
+      if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+    };
+
+    const connect = () => {
+      if (disposed) return;
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+      const sock = new WebSocket(`${WS_URL}?cid=${encodeURIComponent(CLIENT_ID)}`);
+      ws = sock;
+      wsRef.current = sock;
+
+      sock.onopen = () => {
+        if (ws !== sock) return;
+        retry = 0;
+        lastHeardAt = Date.now();
+        lastPingAt = 0;
+        reconnectPending = everConnected;
+        everConnected = true;
+        setConnected(true);
+        setHasConnected(true);
+        setReconnecting(false);
+        flushedQueued = false;
+        const held = pendingSendsRef.current;
+        pendingSendsRef.current = [];
+        held.forEach(({ payload }) => {
+          try { sock.send(JSON.stringify(payload)); flushedQueued = true; } catch (e) { /* ignore */ }
+        });
+        try {
+          sock.send(JSON.stringify({ action: "list_catalog" }));
+          setCatalogLoading(true);
+        } catch (e) { /* ignore */ }
+        stopHeartbeat();
+        heartbeatTimer = setInterval(() => {
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          // Dead = we sent a ping earlier and have heard NOTHING since. This is judged against the
+          // ping, not against the clock, so a background tab whose timers are slowed down by the
+          // browser is not mistaken for a dead connection.
+          if (lastPingAt && lastHeardAt < lastPingAt && Date.now() - lastPingAt > PONG_TIMEOUT_MS) {
+            dropAndReconnectNow();
+            return;
+          }
+          lastPingAt = Date.now();
+          try { ws.send(JSON.stringify({ action: "ping" })); } catch (e) { /* onclose will follow */ }
+        }, HEARTBEAT_MS);
+      };
+
+      sock.onmessage = (event) => {
+        if (ws !== sock) return;
+        lastHeardAt = Date.now();
+        let msg;
+        try { msg = JSON.parse(event.data); } catch (e) { return; }
+        handleMessage(msg);
+      };
+
+      const lost = () => {
+        if (ws !== sock) return;
+        stopHeartbeat();
+        setConnected(false);
+        scheduleReconnect();
+      };
+      sock.onclose = lost;
+      sock.onerror = lost;
+    };
+
+    function scheduleReconnect() {
+      if (disposed || retryTimer) return;
+      const delay = Math.min(1000 * 2 ** retry, MAX_BACKOFF_MS);
+      retry += 1;
+      setReconnecting(true);
+      retryTimer = setTimeout(() => { retryTimer = null; connect(); }, delay);
+    }
+
+    function dropAndReconnectNow() {
+      const old = ws;
+      ws = null;
+      wsRef.current = null;
+      stopHeartbeat();
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+      if (old) { try { old.close(); } catch (e) { /* ignore */ } }
+      setConnected(false);
+      setReconnecting(true);
+      retry = 0;
+      connect();
+    }
+
+    // Coming back online / returning to the tab: do not wait for the back-off timer.
+    const wake = () => {
+      if (disposed) return;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ action: "ping" })); } catch (e) { /* ignore */ }
+      } else {
+        if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+        retry = 0;
+        connect();
+      }
+    };
+    const onVisible = () => { if (!document.hidden) wake(); };
+    window.addEventListener("online", wake);
+    document.addEventListener("visibilitychange", onVisible);
+
+    connect();
+
+    return () => {
+      disposed = true;
+      stopHeartbeat();
+      if (retryTimer) clearTimeout(retryTimer);
+      window.removeEventListener("online", wake);
+      document.removeEventListener("visibilitychange", onVisible);
+      const old = ws;
+      ws = null;
+      wsRef.current = null;
+      if (old) { try { old.close(); } catch (e) { /* ignore */ } }
+    };
   }, []);
 
   const send = (payload) => {
@@ -438,7 +811,21 @@ export default function App() {
       wsRef.current.send(JSON.stringify(payload));
       return true;
     }
-    setAlert({ message: "Not connected to the backend — is uvicorn running?", tone: "danger" });
+    if (hasConnected) {
+      // Brief drop: keep the click and send it as soon as the connection is back.
+      const item = { payload, at: Date.now() };
+      pendingSendsRef.current.push(item);
+      setTimeout(() => {
+        const i = pendingSendsRef.current.indexOf(item);
+        if (i !== -1) {
+          pendingSendsRef.current.splice(i, 1);
+          setAlert({ message: "Could not reach the backend — it is still reconnecting. Please try again in a moment.", tone: "danger" });
+          if (runStartingRef.current) { runStartingRef.current = false; setPhase("awaiting_review"); }
+        }
+      }, QUEUE_MAX_MS);
+      return true;
+    }
+    setAlert({ message: "Not connected to the backend yet — please wait a moment and try again.", tone: "danger" });
     return false;
   };
 
@@ -478,7 +865,33 @@ export default function App() {
     setSweepDiscovery(null);
     setSweepAppendMode(false);
     setSweepAppendText("");
+    setOvernightSummary(null);
+    setRefineText("");
+    setRefining(false);
     queueRef.current = { active: false, queue: [], index: 0, action: null, screensCount: 0 };
+  };
+
+  // ------------------------------------------------------------------
+  // Live catalog (module / screen dropdowns). Typing a name is still allowed.
+  // ------------------------------------------------------------------
+  const refreshCatalog = () => {
+    if (send({ action: "list_catalog", refresh: true })) setCatalogLoading(true);
+  };
+  const moduleNames = useMemo(() => catalog.map((m) => m.module), [catalog]);
+  const findCatalogModule = (name) => catalog.find((m) => catKey(m.module) === catKey(name));
+  const screenOptions = (() => {
+    const m = findCatalogModule(moduleName);
+    return m ? m.screens || [] : [];
+  })();
+  const nameHint = (kind, value, known) => {
+    // kind: "module" | "screen"; known: list of valid names or null when nothing to check against
+    if (!value.trim()) return null;
+    if (catalogError) return null;
+    if (!known || known.length === 0) return null;
+    if (known.some((k) => catKey(k) === catKey(value))) return null;
+    return kind === "module"
+      ? "Not in the repo list. Fetch will report it as not present; Generate will treat it as a new module."
+      : "Not in this module's list. Fetch will report it as not present; Generate will treat it as a new screen.";
   };
 
   const currentModuleList = () =>
@@ -594,12 +1007,6 @@ export default function App() {
   // untouched.
   // ------------------------------------------------------------------
   const handleAutoRun = () => {
-    if (!envConfirmed) {
-      setAlert({ message: "set your test environment (baseUrl / db / username / password) before starting auto-run.", tone: "danger" });
-      setEnvMenuOpen(true);
-      return;
-    }
-
     if (scope === "module") {
       const list = currentModuleList();
       if (!list.length) {
@@ -610,7 +1017,7 @@ export default function App() {
       const sent = send({ action: "auto_run", scope: "module", modules: list, request: userRequest });
       if (sent) {
         setPhase("auto_running");
-        log(`starting auto-run for ${list.length} module(s) — generate, push, run and report will follow on their own...`, "secondary");
+        log(`starting auto generate for ${list.length} module(s) — generate and push will follow on their own (nothing is run)...`, "secondary");
       }
     } else {
       if (!moduleName.trim() || !screen.trim()) {
@@ -627,7 +1034,7 @@ export default function App() {
       });
       if (sent) {
         setPhase("auto_running");
-        log("starting auto-run — generate, push, run and report will follow on their own...", "secondary");
+        log("starting auto generate — generate and push will follow on their own (nothing is run)...", "secondary");
       }
     }
   };
@@ -724,13 +1131,114 @@ export default function App() {
       setEnvMenuOpen(true);
       return;
     }
-    setLines([]);
+    if (runStartingRef.current || phase === "running" || phase === "auto_running") return; // ignore repeat clicks
+    runStartingRef.current = true;
+    // Same tick as the click: running view + first local log, before any backend message.
+    lineIdRef.current += 1;
+    setLines([{ text: "Starting run...", tone: "accent", id: lineIdRef.current }]);
     setResult(null);
     setModuleResult(null);
     setReportAvailable(false);
     setOpenScenarios([]);
-    send({ action: "run" });
+    setPhase("running");
+    if (!send({ action: "run" })) {
+      runStartingRef.current = false;
+      log("Could not start the run: not connected to the backend.", "danger");
+      setPhase("awaiting_review");
+    }
   };
+  // ------------------------------------------------------------------
+  // REFINE — type a change in plain words at the review stage (generated or fetched).
+  // The backend edits the shown screen only; afterwards Approve/Push and Run work again.
+  // ------------------------------------------------------------------
+  const handleRefine = () => {
+    const text = refineText.trim();
+    if (!text || refining) return;
+    const payload = { action: "refine", text };
+    let sel = 0;
+    if (artifacts?.scope === "module" && artifacts?.screens) {
+      sel = selectedScreen;
+      const cur = artifacts.screens[sel];
+      if (!cur) return;
+      payload.module = cur.module;
+      payload.index  = cur.moduleIndex;
+    }
+    const f = edits[`${sel}:feature`];
+    if (typeof f === "string") payload.feature = f;
+    refineSelRef.current = sel;
+    if (send(payload)) setRefining(true);
+  };
+
+  // ------------------------------------------------------------------
+  // OVERNIGHT RUN — run only (no generate / append / modify), every screen of the chosen
+  // modules one after another. Asks for confirmation first.
+  // ------------------------------------------------------------------
+  const addOvernightModule = (value) => {
+    const v = (value ?? overnightDraft).trim();
+    if (!v) return;
+    const known = findCatalogModule(v);
+    const name = known ? known.module : v;
+    setOvernightModules((prev) => (prev.some((m) => catKey(m) === catKey(name)) ? prev : [...prev, name]));
+    setOvernightDraft("");
+  };
+  const removeOvernightModule = (v) => setOvernightModules((prev) => prev.filter((m) => m !== v));
+  const overnightScreenCount = () => {
+    let total = 0;
+    let unknown = 0;
+    overnightModules.forEach((name) => {
+      const m = findCatalogModule(name);
+      if (m) total += (m.screens || []).length; else unknown += 1;
+    });
+    return { total, unknown };
+  };
+  const handleOvernightAsk = () => {
+    if (!overnightModules.length) {
+      setAlert({ message: "pick at least one module for the auto run.", tone: "danger" });
+      return;
+    }
+    if (!envConfirmed) {
+      setAlert({ message: "set your test environment (baseUrl / db / username / password) before the auto run.", tone: "danger" });
+      setEnvMenuOpen(true);
+      return;
+    }
+    setOvernightConfirm(true);
+  };
+  const handleOvernightStart = () => {
+    setOvernightConfirm(false);
+    const list = overnightModules.slice();
+    resetRun();
+    if (send({ action: "overnight_run", modules: list })) {
+      setPhase("auto_running");
+      log(`starting overnight run for ${list.length} module(s) — every screen is run one after another, nothing is generated or changed...`, "secondary");
+    }
+  };
+  const downloadOvernightReport = async (it) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/history/${it.run_id}/report`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `qc-report-${it.module}-${it.screen}.xlsx`.replace(/[^\w.-]+/g, "_");
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      setAlert({ message: `Report download failed (${e.message}).`, tone: "danger" });
+    }
+  };
+  const openOvernightScreenshots = async (it) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/history/${it.run_id}/screenshots`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setPreview({ kind: "screenshots", html: await res.text(), filename: `qc-screenshots-${it.module}-${it.screen}.html`.replace(/[^\w.-]+/g, "_") });
+    } catch (e) {
+      setAlert({ message: `Screenshots failed to load (${e.message}).`, tone: "danger" });
+    }
+  };
+
   const handleReport      = () => send({ action: "report" });
   const handleScreenshots = () => send({ action: "screenshots" });
   const handleDownloadPreview = () => {
@@ -751,12 +1259,19 @@ export default function App() {
     setPhase("idle");
   };
 
+  // What the user sees: a drop shorter than GRACE_MS is invisible (we reconnect in ~1-2s).
+  const linkOk   = connected || (hasConnected && linkLevel !== "down");
+  const linkTone = linkOk ? "success" : "danger";
+  const linkText = linkOk ? "Connected" : "Disconnected";
+  const showLinkPill = hasConnected || linkLevel === "down"; // nothing is shown during the first second or two of page load
+
   const phaseInfo    = PHASE_LABELS[phase] || null;
   const hasArtifacts = !!(
     (artifacts?.feature_file && artifacts?.script) ||
     (artifacts?.screens && artifacts.screens.length > 0)
   );
   const canRun       = hasArtifacts && phase === "awaiting_review";
+  const runningNow   = hasArtifacts && phase === "running"; // Run button stays visible but disabled
   const canApprove   = hasArtifacts && phase === "awaiting_approval";
   const showLog      = lines.length > 0 || phase === "resolving" || phase === "running" || phase === "sweeping" || phase === "auto_running" || phase === "done";
   const busy         = phase === "resolving" || phase === "running" || phase === "sweeping" || phase === "auto_running";
@@ -804,13 +1319,34 @@ export default function App() {
         />
       )}
 
+      {overnightConfirm && (() => {
+        const { total, unknown } = overnightScreenCount();
+        const names = overnightModules.join(", ");
+        const countText = unknown === 0 ? `all ${total} screen${total === 1 ? "" : "s"}` : "all screens";
+        return (
+          <div className="preview-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setOvernightConfirm(false); }}>
+            <div className="confirm-dialog" role="dialog" aria-modal="true">
+              <div className="confirm-title">Start auto run?</div>
+              <div className="confirm-text">
+                Run {countText} in {names}? This may take a long time.
+                Nothing is generated or changed — existing tests are only run, one screen after another.
+              </div>
+              <div className="confirm-actions">
+                <button className="secondary" onClick={() => setOvernightConfirm(false)}>Cancel</button>
+                <button className="primary" onClick={handleOvernightStart}><IconPlay size={14} /> Start</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       <div className="app-shell">
         <Sidebar
           view={view}
           setView={setView}
           envConfirmed={envConfirmed}
           onOpenEnv={handleToggleEnvMenu}
-          connected={connected}
+          connected={linkOk}
         />
 
         <div className="content">
@@ -827,10 +1363,12 @@ export default function App() {
               )}
             </nav>
             <div className="header-pills">
-              <span className={`pill ${connected ? "success" : "danger"}`}>
-                <span className="pill-dot" />
-                Backend: {connected ? "Connected" : "Disconnected"}
-              </span>
+              {showLinkPill && (
+                <span className={`pill ${linkTone}`}>
+                  <span className="pill-dot" />
+                  Backend: {linkText}
+                </span>
+              )}
               {view === "dashboard" && phaseInfo && (
                 <span className={`pill ${phaseInfo.tone}`}>
                   <span className="pill-dot" />
@@ -840,12 +1378,14 @@ export default function App() {
             </div>
           </header>
 
-          {view === "history" && <HistoryPage apiBase={apiBaseFromWs(WS_URL)} />}
+          {view === "history" && <HistoryPage apiBase={API_BASE} />}
 
           <div className="dashboard" style={{ display: view === "dashboard" ? undefined : "none" }}>
 
             <aside className="left-panel">
 
+              {mode !== "overnight" && (
+              <>
               <section className="card">
                 <div className="card-head">
                   <span className="card-ico"><IconTarget size={18} /></span>
@@ -871,6 +1411,15 @@ export default function App() {
                   <div className="card-head-text">
                     <h3 className="card-heading">{scope === "module" ? "Target modules" : "Target screen"}</h3>
                   </div>
+                  <button
+                    type="button"
+                    className="icon-btn-sm"
+                    title="Refresh the module / screen list from the repo"
+                    onClick={refreshCatalog}
+                    disabled={catalogLoading}
+                  >
+                    <IconRefresh size={14} />
+                  </button>
                 </div>
                 <div className="field-stack">
                   {scope === "module" ? (
@@ -878,15 +1427,23 @@ export default function App() {
                       <label className="field-label">
                         Modules {moduleChips.length > 0 ? `(${moduleChips.length} queued)` : ""}
                       </label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Finance — press Enter"
+                      <PickOrType
+                        placeholder="Pick a module or type one — press Enter"
                         value={chipDraft}
-                        onChange={(e) => setChipDraft(e.target.value)}
+                        onChange={setChipDraft}
+                        options={moduleNames}
+                        onPick={(o) => {
+                          setModuleChips((prev) => (prev.includes(o) ? prev : [...prev, o]));
+                          setChipDraft("");
+                        }}
                         onKeyDown={handleChipInputKeyDown}
                         onBlur={addModuleChip}
                         disabled={busy}
                       />
+                      {catalogError && <p className="hint hint-tight">Module list unavailable — type the names instead.</p>}
+                      {nameHint("module", chipDraft, moduleNames) && (
+                        <p className="hint hint-tight">{nameHint("module", chipDraft, moduleNames)}</p>
+                      )}
                       {moduleChips.length > 0 && (
                         <div className="chip-row">
                           {moduleChips.map((m) => (
@@ -909,19 +1466,44 @@ export default function App() {
                   ) : (
                     <div>
                       <label className="field-label">Module</label>
-                      <input type="text" placeholder="e.g. Finance" value={moduleName}
-                        onChange={(e) => setModuleName(e.target.value)} disabled={busy} />
+                      <PickOrType
+                        placeholder="Pick a module or type one"
+                        value={moduleName}
+                        onChange={setModuleName}
+                        options={moduleNames}
+                        onPick={(o) => {
+                          const m = findCatalogModule(o);
+                          const keep = m && (m.screens || []).some((s) => catKey(s) === catKey(screen));
+                          if (!keep) setScreen("");
+                        }}
+                        disabled={busy}
+                      />
+                      {catalogError && <p className="hint hint-tight">Module list unavailable — type the name instead.</p>}
+                      {nameHint("module", moduleName, moduleNames) && (
+                        <p className="hint hint-tight">{nameHint("module", moduleName, moduleNames)}</p>
+                      )}
                     </div>
                   )}
                   {scope === "screen" && (
                     <div>
                       <label className="field-label">Screen</label>
-                      <input type="text" placeholder="e.g. Instrument master" value={screen}
-                        onChange={(e) => setScreen(e.target.value)} disabled={busy} />
+                      <PickOrType
+                        placeholder={screenOptions.length ? "Pick a screen or type one" : "Type a screen name"}
+                        value={screen}
+                        onChange={setScreen}
+                        options={screenOptions}
+                        disabled={busy}
+                      />
+                      {nameHint("screen", screen, screenOptions) && (
+                        <p className="hint hint-tight">{nameHint("screen", screen, screenOptions)}</p>
+                      )}
                     </div>
                   )}
                 </div>
               </section>
+
+              </>
+              )}
 
               <section className="card">
                 <div className="card-head">
@@ -931,7 +1513,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="segmented three">
+                <div className="segmented four">
                   <button className={`seg-btn${mode === "fetch" ? " active" : ""}`}
                     onClick={() => setMode("fetch")} disabled={busy} title="Fetch existing">
                     Fetch
@@ -941,8 +1523,12 @@ export default function App() {
                     Generate
                   </button>
                   <button className={`seg-btn${mode === "autorun" ? " active" : ""}`}
-                    onClick={() => setMode("autorun")} disabled={busy} title="Auto-run (unattended)">
-                    <IconBolt size={14} /> Auto-run
+                    onClick={() => setMode("autorun")} disabled={busy} title="Auto generate: generate, push and run (unattended)">
+                    <IconBolt size={14} /> Auto generate
+                  </button>
+                  <button className={`seg-btn${mode === "overnight" ? " active" : ""}`}
+                    onClick={() => setMode("overnight")} disabled={busy} title="Auto run: run every screen of the chosen modules, nothing is generated or changed">
+                    <IconPlay size={13} /> Auto run
                   </button>
                 </div>
 
@@ -971,7 +1557,7 @@ export default function App() {
                       <IconSpark /> Start generation
                     </button>
                   </div>
-                ) : (
+                ) : mode === "autorun" ? (
                   <div className="field-stack top-gap">
                     <div>
                       <label className="field-label">Test request (optional)</label>
@@ -983,7 +1569,60 @@ export default function App() {
                       onClick={handleAutoRun}
                       disabled={busy}
                     >
-                      <IconBolt /> Start auto-run
+                      <IconBolt /> Start auto generate
+                    </button>
+                  </div>
+                ) : (
+                  <div className="field-stack top-gap">
+                    <div>
+                      <label className="field-label">
+                        Modules {overnightModules.length > 0 ? `(${overnightModules.length} chosen)` : ""}
+                      </label>
+                      <PickOrType
+                        placeholder="Pick a module or type one"
+                        value={overnightDraft}
+                        onChange={setOvernightDraft}
+                        options={moduleNames}
+                        onPick={(o) => addOvernightModule(o)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === ",") { e.preventDefault(); addOvernightModule(); }
+                        }}
+                        onBlur={() => addOvernightModule()}
+                        disabled={busy}
+                      />
+                      {catalogError && <p className="hint hint-tight">Module list unavailable — type the names instead.</p>}
+                      {nameHint("module", overnightDraft, moduleNames) && (
+                        <p className="hint hint-tight">{nameHint("module", overnightDraft, moduleNames)}</p>
+                      )}
+                      {overnightModules.length > 0 && (
+                        <div className="chip-row">
+                          {overnightModules.map((m) => (
+                            <span key={m} className="chip">
+                              {m}
+                              <button type="button" className="chip-x" onClick={() => removeOvernightModule(m)} disabled={busy} aria-label={`remove ${m}`}>
+                                <IconX size={12} strokeWidth={2.4} />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {overnightModules.length > 0 && (() => {
+                      const { total, unknown } = overnightScreenCount();
+                      return (
+                        <p className="hint">
+                          {total} screen(s) in the repo list
+                          {unknown > 0 ? ` — ${unknown} module(s) not in the list will be checked by the backend` : ""}.
+                          Screens without a feature file or script are reported as "skipped: not present".
+                        </p>
+                      );
+                    })()}
+                    <button
+                      className="primary full lg"
+                      onClick={handleOvernightAsk}
+                      disabled={busy || overnightModules.length === 0}
+                    >
+                      <IconPlay size={14} /> Start auto run
                     </button>
                   </div>
                 )}
@@ -1017,7 +1656,7 @@ export default function App() {
 
             <main className="right-panel">
 
-              {!hasArtifacts && !showLog && !showConflict && !showSweepConfirm && (
+              {!hasArtifacts && !showLog && !showConflict && !showSweepConfirm && !overnightSummary && (
                 <div className="empty-state">
                   <div className="empty-state-icon"><IconSearch size={22} /></div>
                   <p>Fetch an existing screen to review its test files,<br />or generate new tests from source code.</p>
@@ -1120,18 +1759,12 @@ export default function App() {
                     </div>
 
                     <div className="side-by-side">
-                      <div className="sxs-panel">
-                        <PanelHead icon={<IconFile size={15} />} title="Existing feature file" />
-                        <div className="sxs-body">
-                          <FeatureFileView key={preview.existing_feature} text={preview.existing_feature} />
-                        </div>
-                      </div>
-                      <div className="sxs-panel">
-                        <PanelHead icon={<IconCode size={15} />} title="Existing script" />
-                        <div className="sxs-body">
-                          <CodeView text={preview.existing_script} />
-                        </div>
-                      </div>
+                      <SxsPanel icon={<IconFile size={15} />} title="Existing feature file">
+                        <FeatureFileView key={preview.existing_feature} text={preview.existing_feature} />
+                      </SxsPanel>
+                      <ScriptPopup title="Existing script">
+                        <CodeView text={preview.existing_script} />
+                      </ScriptPopup>
                     </div>
 
                     {!appendMode ? (
@@ -1269,67 +1902,103 @@ export default function App() {
 
                     return (
                       <div className="side-by-side">
-                        <div className="sxs-panel">
-                          <PanelHead icon={<IconFile size={15} />} title="Feature file">
-                            {typeof edits[featureKey] === "string" && !featureEditing && (
-                              <span className="edited-badge">edited</span>
-                            )}
-                            {canEdit && !featureEditing ? (
-                              <button
-                                className="panel-edit-btn"
-                                title="Edit feature file"
-                                onClick={() => beginEdit(featureKey)}
-                              >
-                                <IconEdit size={13} /> Edit
-                              </button>
-                            ) : null}
-                          </PanelHead>
-                          <div className="sxs-body">
-                            {featureEditing ? (
-                              <PanelEditor
-                                initialText={featureText}
-                                onSave={(val) => saveEdit(featureKey, val)}
-                                onCancel={() => cancelEdit(featureKey)}
-                              />
-                            ) : (
-                              <FeatureFileView
-                                key={featureText}
-                                text={featureText}
-                                onOpenScenariosChange={logReadyForHighlight ? setOpenScenarios : undefined}
-                              />
-                            )}
-                          </div>
-                        </div>
-                        <div className="sxs-panel">
-                          <PanelHead icon={<IconCode size={15} />} title="Cypress script">
-                            {typeof edits[scriptKey] === "string" && !scriptEditing && (
-                              <span className="edited-badge">edited</span>
-                            )}
-                            {canEdit && !scriptEditing ? (
-                              <button
-                                className="panel-edit-btn"
-                                title="Edit script"
-                                onClick={() => beginEdit(scriptKey)}
-                              >
-                                <IconEdit size={13} /> Edit
-                              </button>
-                            ) : null}
-                          </PanelHead>
-                          <div className="sxs-body">
-                            {scriptEditing ? (
-                              <PanelEditor
-                                initialText={scriptText}
-                                onSave={(val) => saveEdit(scriptKey, val)}
-                                onCancel={() => cancelEdit(scriptKey)}
-                              />
-                            ) : (
-                              <CodeView text={scriptText} />
-                            )}
-                          </div>
-                        </div>
+                        <SxsPanel
+                          icon={<IconFile size={15} />}
+                          title="Feature file"
+                          headExtras={
+                            <>
+                              {typeof edits[featureKey] === "string" && !featureEditing && (
+                                <span className="edited-badge">edited</span>
+                              )}
+                              {canEdit && !featureEditing ? (
+                                <button
+                                  className="panel-edit-btn"
+                                  title="Edit feature file"
+                                  onClick={() => beginEdit(featureKey)}
+                                >
+                                  <IconEdit size={13} /> Edit
+                                </button>
+                              ) : null}
+                            </>
+                          }
+                        >
+                          {featureEditing ? (
+                            <PanelEditor
+                              initialText={featureText}
+                              onSave={(val) => saveEdit(featureKey, val)}
+                              onCancel={() => cancelEdit(featureKey)}
+                            />
+                          ) : (
+                            <FeatureFileView
+                              key={featureText}
+                              text={featureText}
+                              onOpenScenariosChange={logReadyForHighlight ? setOpenScenarios : undefined}
+                            />
+                          )}
+                        </SxsPanel>
+                        <ScriptPopup
+                          title="Cypress script"
+                          launcherExtras={
+                            typeof edits[scriptKey] === "string" && !scriptEditing
+                              ? <span className="edited-badge">edited</span>
+                              : null
+                          }
+                          headExtras={
+                            <>
+                              {typeof edits[scriptKey] === "string" && !scriptEditing && (
+                                <span className="edited-badge">edited</span>
+                              )}
+                              {canEdit && !scriptEditing ? (
+                                <button
+                                  className="panel-edit-btn"
+                                  title="Edit script"
+                                  onClick={() => beginEdit(scriptKey)}
+                                >
+                                  <IconEdit size={13} /> Edit
+                                </button>
+                              ) : null}
+                            </>
+                          }
+                        >
+                          {scriptEditing ? (
+                            <PanelEditor
+                              initialText={scriptText}
+                              onSave={(val) => saveEdit(scriptKey, val)}
+                              onCancel={() => cancelEdit(scriptKey)}
+                            />
+                          ) : (
+                            <CodeView text={scriptText} />
+                          )}
+                        </ScriptPopup>
                       </div>
                     );
                   })()}
+
+                  {hasArtifacts && (phase === "awaiting_approval" || phase === "awaiting_review") && (
+                    <div className="refine-box">
+                      <label className="field-label">Refine this screen</label>
+                      <div className="refine-row">
+                        <textarea
+                          rows={2}
+                          placeholder={"Describe a change in plain words — e.g. \"use admin@test.com for the Email field\", \"add a comment: covers the 2025 tax rule\", \"add a scenario for a negative amount\""}
+                          value={refineText}
+                          onChange={(e) => setRefineText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleRefine(); }
+                          }}
+                          disabled={refining}
+                        />
+                        <button
+                          className="primary refine-send"
+                          onClick={handleRefine}
+                          disabled={refining || !refineText.trim()}
+                          title="Apply (Ctrl+Enter)"
+                        >
+                          <IconSpark size={14} /> {refining ? "Applying..." : "Apply"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {moduleResult && (
                     <div className="module-summary">
@@ -1346,7 +2015,7 @@ export default function App() {
                     </div>
                   )}
 
-                  {(canApprove || canRun || reportAvailable) && (
+                  {(canApprove || canRun || runningNow || reportAvailable) && (
                     <div className="action-bar">
                       <div className="action-group">
                         {canApprove && (
@@ -1357,6 +2026,9 @@ export default function App() {
                         )}
                         {canRun && (
                           <button className="primary" onClick={handleRun}><IconPlay size={14} /> Run</button>
+                        )}
+                        {runningNow && (
+                          <button className="primary" disabled><IconPlay size={14} /> Running...</button>
                         )}
                       </div>
                       <div className="action-group end">
@@ -1375,6 +2047,72 @@ export default function App() {
                       </div>
                     </div>
                   )}
+                </section>
+              )}
+
+              {overnightSummary && (
+                <section className="card overnight-summary">
+                  <div className="card-head">
+                    <span className="card-ico"><IconMoon size={18} /></span>
+                    <div className="card-head-text">
+                      <h3 className="card-heading">Overnight run summary</h3>
+                      <p className="card-sub">{(overnightSummary.modules || []).join(", ")}</p>
+                    </div>
+                  </div>
+                  <div className="ov-stats">
+                    <span className="ov-stat"><b>{overnightSummary.total ?? 0}</b> total</span>
+                    <span className="ov-stat success"><b>{overnightSummary.passed ?? 0}</b> passed</span>
+                    <span className="ov-stat danger"><b>{overnightSummary.failed ?? 0}</b> failed</span>
+                    <span className="ov-stat muted"><b>{overnightSummary.skipped ?? 0}</b> skipped</span>
+                    <span className="ov-stat"><b>{formatDuration(overnightSummary.elapsed_seconds)}</b> total time</span>
+                  </div>
+                  {overnightSummary.combined_run_id && (
+                    <div className="ov-whole">
+                      <button
+                        className="secondary"
+                        onClick={() => downloadOvernightReport({ run_id: overnightSummary.combined_run_id, module: "overnight", screen: "whole-run" })}
+                        title="One Excel report covering every screen of this run"
+                      >
+                        <IconSheet /> Whole report (Excel)
+                      </button>
+                      <button
+                        className="secondary"
+                        onClick={() => openOvernightScreenshots({ run_id: overnightSummary.combined_run_id, module: "overnight", screen: "whole-run" })}
+                        title="Screenshots of every screen of this run"
+                      >
+                        <IconImage /> Screenshots
+                      </button>
+                    </div>
+                  )}
+                  <div className="ov-table-wrap">
+                    <table className="ov-table">
+                      <thead>
+                        <tr><th>Module</th><th>Screen</th><th>Result</th><th>Details</th><th>Report</th></tr>
+                      </thead>
+                      <tbody>
+                        {(overnightSummary.items || []).map((it, i) => (
+                          <tr key={`${it.module}/${it.screen}/${i}`}>
+                            <td>{it.module}</td>
+                            <td>{it.screen}</td>
+                            <td>
+                              <Badge tone={it.status === "passed" ? "success" : it.status === "skipped" ? "muted" : "danger"}>
+                                {it.status}
+                              </Badge>
+                            </td>
+                            <td className="ov-reason">{it.reason || (it.exit_code != null ? `exit ${it.exit_code}` : "")}</td>
+                            <td className="ov-links">
+                              {it.run_id ? (
+                                <>
+                                  <button type="button" className="link-btn" onClick={() => downloadOvernightReport(it)}>Report</button>
+                                  <button type="button" className="link-btn" onClick={() => openOvernightScreenshots(it)}>Screenshots</button>
+                                </>
+                              ) : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </section>
               )}
 

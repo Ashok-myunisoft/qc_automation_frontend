@@ -8,7 +8,7 @@ export function apiBaseFromWs(wsUrl) {
   return wsUrl.replace(/^ws/, "http").replace(/\/ws\/qc\/?$/, "");
 }
 
-const SOURCE_LABEL = { fetch: "Fetch → Run", generate: "Generate → Run", auto_run: "Auto-run" };
+const SOURCE_LABEL = { fetch: "Fetch → Run", generate: "Generate → Run", auto_run: "Auto-run", overnight_run: "Overnight run" };
 
 function fmtDate(iso) {
   if (!iso) return "—";

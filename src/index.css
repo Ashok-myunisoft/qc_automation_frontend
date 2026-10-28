@@ -105,11 +105,18 @@ body {
 }
 .app-shell:has(.sidebar.collapsed) .dashboard { grid-template-columns: 360px minmax(0, 1fr); }
 .left-panel .segmented.three .seg-btn { padding: 0 4px; font-size: 12.5px; white-space: nowrap; }
+.left-panel .segmented.four .seg-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 8px; height: 38px; min-width: 0; padding: 0 10px;
+  font-size: 13px; white-space: nowrap;
+}
 .left-panel  { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .right-panel { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.review-card { min-width: 0; }
 
 /* ── CARD ──────────────────────────────────────────────────────── */
 .card {
+  min-width: 0;
   background: var(--surface-1); border: 1px solid var(--border);
   border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
   padding: 18px;
@@ -199,6 +206,7 @@ button.primary:disabled, button.approve:disabled { box-shadow: none; }
   padding: 4px; background: #eff0f6; border-radius: 11px;
 }
 .segmented.three { grid-template-columns: repeat(3, 1fr); }
+.segmented.four { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 6px; }
 .seg-btn {
   height: 34px; padding: 0 8px; border: none; background: transparent;
   color: var(--text-secondary); font-size: 13px; font-weight: 500; border-radius: 8px;
@@ -303,7 +311,8 @@ button.primary:disabled, button.approve:disabled { box-shadow: none; }
 .combobox-empty { padding: 10px; font-size: 13px; color: var(--text-muted); text-align: center; }
 
 /* ── SIDE BY SIDE: feature file | script ───────────────────────── */
-.side-by-side { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-bottom: 4px; }
+/* feature file gets the whole width; the script lives behind a button (see .script-launch-row) */
+.side-by-side { display: flex; flex-direction: column; gap: 12px; margin-bottom: 4px; }
 .sxs-panel {
   display: flex; flex-direction: column; min-width: 0;
   border: 1px solid var(--border); border-radius: 12px;
@@ -318,8 +327,23 @@ button.primary:disabled, button.approve:disabled { box-shadow: none; }
 .sxs-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
 .sxs-meta { font-size: 12px; color: var(--text-muted); }
 .sxs-spacer { flex: 1; }
-.sxs-body { height: clamp(360px, 54vh, 540px); overflow: auto; background: var(--surface-1); }
+.sxs-body { height: clamp(420px, 64vh, 760px); overflow: auto; background: var(--surface-1); }
 .panel-edit-btn { height: 28px; padding: 0 10px; font-size: 12px; gap: 5px; border-radius: 7px; color: var(--text-secondary); }
+
+/* script launcher: one small button under the feature file */
+.script-launch-row { display: flex; align-items: center; gap: 10px; }
+.script-launch-btn {
+  height: 32px; padding: 0 12px; font-size: 12.5px; gap: 7px; border-radius: 8px;
+  color: var(--brand-dark); background: var(--brand-light); border-color: var(--border-accent2);
+}
+.script-launch-btn:hover { background: #e2e5ff; border-color: #aab0ff; }
+/* script panel is hidden until it is opened (it is then shown by .maximized) */
+.sxs-panel.popup:not(.maximized) { display: none; }
+
+/* maximize a feature / script panel (same idea as .log-card.maximized) */
+.sxs-backdrop { position: fixed; inset: 0; background: rgba(13, 18, 32, .55); backdrop-filter: blur(2px); z-index: 99; }
+.sxs-panel.maximized { position: fixed; inset: 16px; z-index: 100; box-shadow: 0 24px 60px rgba(0,0,0,.5); }
+.sxs-panel.maximized .sxs-body { flex: 1; height: auto; min-height: 0; }
 
 /* feature file — scenario cards */
 .feature-view { padding-bottom: 6px; }
@@ -327,7 +351,8 @@ button.primary:disabled, button.approve:disabled { box-shadow: none; }
   margin: 0; padding: 12px 16px; background: var(--surface-2);
   border-bottom: 1px solid var(--border);
   font-family: var(--font-mono); font-size: 12px; line-height: 1.6;
-  color: var(--text-secondary); white-space: pre-wrap;
+  color: var(--text-secondary);
+  white-space: pre; word-break: normal; overflow-x: auto;
 }
 .scenario-row { border-top: 1px solid var(--border); }
 .scenario-row-head {
@@ -348,7 +373,8 @@ button.primary:disabled, button.approve:disabled { box-shadow: none; }
 .scenario-row-body {
   margin: 0; padding: 10px 14px 14px 36px;
   font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6;
-  color: var(--text-primary); white-space: pre-wrap; word-break: break-word;
+  color: var(--text-primary);
+  white-space: pre; word-break: normal; overflow-x: auto;
 }
 
 /* script viewer */
@@ -357,6 +383,10 @@ button.primary:disabled, button.approve:disabled { box-shadow: none; }
 .c-row:hover { background: var(--surface-2); }
 .c-num { text-align: right; padding-right: 14px; color: #b3b8c9; user-select: none; font-size: 11.5px; }
 .c-text { white-space: pre-wrap; word-break: break-word; padding-right: 16px; }
+/* a feature file shown as plain text: never wrap, scroll sideways inside the panel */
+.code-view.plain { width: max-content; min-width: 100%; }
+.code-view.plain .c-text { white-space: pre; word-break: normal; }
+.feature-view { min-width: 0; }
 .t-com { color: #97a0b5; font-style: italic; }
 .t-str { color: #0f7a6d; }
 .t-kw  { color: #7c3aed; }
@@ -370,6 +400,7 @@ button.primary:disabled, button.approve:disabled { box-shadow: none; }
   font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6;
   border: none; border-radius: 0; border-bottom: 1px solid var(--border);
   background: var(--surface-2); color: #2b3045; resize: none; outline: none;
+  white-space: pre; overflow-x: auto;
 }
 .panel-editor textarea:focus { background: #fff; box-shadow: none; }
 .panel-editor-actions { display: flex; gap: 8px; justify-content: flex-end; padding: 10px 14px; background: var(--surface-1); }
@@ -565,9 +596,6 @@ button.primary:disabled, button.approve:disabled { box-shadow: none; }
 .env-drawer-save { margin-top: 4px; height: 40px; font-weight: 600; }
 
 /* ── RESPONSIVE ────────────────────────────────────────────────── */
-@media (max-width: 1240px) {
-  .side-by-side { grid-template-columns: minmax(0, 1fr); }
-}
 @media (max-width: 1080px) {
   .dashboard,
   .app-shell:has(.sidebar.collapsed) .dashboard { grid-template-columns: minmax(0, 1fr); }
@@ -576,3 +604,47 @@ button.primary:disabled, button.approve:disabled { box-shadow: none; }
 
 .side-by-side + .btn-row,
 .side-by-side + .field-stack { margin-top: 16px; }
+
+/* ── CATALOG HINTS + SMALL ICON BUTTONS ────────────────────────── */
+.hint-tight { margin-top: 6px; }
+.icon-btn-sm {
+  flex: none; width: 30px; height: 30px; padding: 0; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-secondary);
+}
+.icon-btn-sm:disabled { opacity: .5; }
+.moon-btn.active { background: var(--brand-light); color: var(--brand-dark); border-color: var(--brand-light); }
+.link-btn {
+  height: auto; padding: 0; border: none; background: none; box-shadow: none;
+  color: var(--text-accent); font-size: 12.5px; font-weight: 500; text-decoration: underline; cursor: pointer;
+}
+.link-btn:hover { background: none; border: none; opacity: .8; }
+
+/* ── REFINE BOX (review stage) ─────────────────────────────────── */
+.refine-box { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.refine-row { display: flex; gap: 10px; align-items: flex-end; }
+.refine-row textarea { flex: 1; min-width: 0; resize: vertical; }
+.refine-send { flex: none; height: 38px; }
+
+/* ── OVERNIGHT RUN ─────────────────────────────────────────────── */
+.ov-stats { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+.ov-stat {
+  padding: 6px 12px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface-2); font-size: 12.5px; color: var(--text-secondary);
+}
+.ov-stat b { color: var(--text-primary); font-weight: 600; margin-right: 3px; }
+.ov-stat.success b { color: #15803d; }
+.ov-stat.danger b { color: #b91c1c; }
+.ov-table-wrap { overflow-x: auto; }
+.ov-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ov-table th {
+  text-align: left; font-size: 12px; font-weight: 600; color: var(--text-muted);
+  padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.ov-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.ov-table tr:last-child td { border-bottom: none; }
+.ov-reason { color: var(--text-secondary); max-width: 320px; word-break: break-word; }
+.ov-links { white-space: nowrap; }
+.ov-links .link-btn + .link-btn { margin-left: 12px; }
+
+.ov-whole { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
