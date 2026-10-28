@@ -8,7 +8,7 @@ import {
   IconTarget, IconX,
 } from "./icons";
 
-const WS_URL = "ws://localhost:8000/ws/qc";
+const WS_URL = "ws://217.217.249.121:8053/ws/qc";
 const API_BASE = apiBaseFromWs(WS_URL);
 
 // Identifies this browser page to the backend. It stays the same across automatic reconnects,
