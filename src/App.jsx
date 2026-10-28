@@ -231,7 +231,7 @@ function formatDuration(sec) {
 const catKey = (s) => (s || "").trim().toLowerCase();
 
 // A text box with a dropdown of suggestions. You can pick one OR type any name freely.
-function PickOrType({ value, onChange, options, placeholder, disabled, onPick, onKeyDown, onBlur }) {
+function PickOrType({ value, onChange, options, placeholder, disabled, onPick, onKeyDown, onBlur, loading, loadingText }) {
   const [open, setOpen] = useState(false);
   const q = catKey(value);
   const shown = (options || []).filter((o) => catKey(o).includes(q)).slice(0, 200);
@@ -240,7 +240,7 @@ function PickOrType({ value, onChange, options, placeholder, disabled, onPick, o
       <input
         type="text"
         className="combobox-input"
-        placeholder={placeholder}
+        placeholder={loading ? (loadingText || "Loading from repo...") : placeholder}
         value={value}
         disabled={disabled}
         onChange={(e) => { onChange(e.target.value); setOpen(true); }}
@@ -248,7 +248,18 @@ function PickOrType({ value, onChange, options, placeholder, disabled, onPick, o
         onKeyDown={onKeyDown}
         onBlur={() => { setTimeout(() => setOpen(false), 120); if (onBlur) onBlur(); }}
       />
-      <span className="combobox-caret"><IconChevronDown size={16} /></span>
+      <span className="combobox-caret">
+        {loading ? (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-label="loading">
+            <circle cx="12" cy="12" r="9" opacity="0.25" />
+            <path d="M21 12a9 9 0 0 0-9-9">
+              <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite" />
+            </path>
+          </svg>
+        ) : (
+          <IconChevronDown size={16} />
+        )}
+      </span>
       {open && !disabled && shown.length > 0 && (
         <div className="combobox-list">
           {shown.map((o) => (
@@ -1439,6 +1450,8 @@ export default function App() {
                         onKeyDown={handleChipInputKeyDown}
                         onBlur={addModuleChip}
                         disabled={busy}
+                        loading={catalogLoading}
+                        loadingText="Loading modules from repo..."
                       />
                       {catalogError && <p className="hint hint-tight">Module list unavailable — type the names instead.</p>}
                       {nameHint("module", chipDraft, moduleNames) && (
@@ -1477,6 +1490,8 @@ export default function App() {
                           if (!keep) setScreen("");
                         }}
                         disabled={busy}
+                        loading={catalogLoading}
+                        loadingText="Loading modules from repo..."
                       />
                       {catalogError && <p className="hint hint-tight">Module list unavailable — type the name instead.</p>}
                       {nameHint("module", moduleName, moduleNames) && (
@@ -1493,6 +1508,8 @@ export default function App() {
                         onChange={setScreen}
                         options={screenOptions}
                         disabled={busy}
+                        loading={catalogLoading}
+                        loadingText="Loading screens from repo..."
                       />
                       {nameHint("screen", screen, screenOptions) && (
                         <p className="hint hint-tight">{nameHint("screen", screen, screenOptions)}</p>
@@ -1589,6 +1606,8 @@ export default function App() {
                         }}
                         onBlur={() => addOvernightModule()}
                         disabled={busy}
+                        loading={catalogLoading}
+                        loadingText="Loading modules from repo..."
                       />
                       {catalogError && <p className="hint hint-tight">Module list unavailable — type the names instead.</p>}
                       {nameHint("module", overnightDraft, moduleNames) && (
