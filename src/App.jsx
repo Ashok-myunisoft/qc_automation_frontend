@@ -561,7 +561,6 @@ export default function App() {
   // Overnight run.
   const [overnightModules, setOvernightModules] = useState([]);
   const [overnightDraft, setOvernightDraft] = useState("");
-  const [overnightConfirm, setOvernightConfirm] = useState(false);
   const [overnightSummary, setOvernightSummary] = useState(null);
 
   const refineSelRef = useRef(0); // which screen was selected when Apply was clicked
@@ -1321,7 +1320,7 @@ export default function App() {
 
   // ------------------------------------------------------------------
   // OVERNIGHT RUN — run only (no generate / append / modify), every screen of the chosen
-  // modules one after another. Asks for confirmation first.
+  // modules one after another. Starts immediately on click (no confirmation dialog).
   // ------------------------------------------------------------------
   const addOvernightModule = (value) => {
     const v = (value ?? overnightDraft).trim();
@@ -1341,7 +1340,7 @@ export default function App() {
     });
     return { total, unknown };
   };
-  const handleOvernightAsk = () => {
+  const handleOvernightStart = () => {
     if (!overnightModules.length) {
       setAlert({ message: "pick at least one module for the auto run.", tone: "danger" });
       return;
@@ -1351,10 +1350,6 @@ export default function App() {
       setEnvMenuOpen(true);
       return;
     }
-    setOvernightConfirm(true);
-  };
-  const handleOvernightStart = () => {
-    setOvernightConfirm(false);
     const list = overnightModules.slice();
     resetRun();
     if (send({ action: "overnight_run", modules: list, notify: notifyAutoRun })) {
@@ -1475,28 +1470,6 @@ export default function App() {
           teams={{ configured: teamsConfigured }}
         />
       )}
-
-      {overnightConfirm && (() => {
-        const { total, unknown } = overnightScreenCount();
-        const names = overnightModules.join(", ");
-        const countText = unknown === 0 ? `all ${total} screen${total === 1 ? "" : "s"}` : "all screens";
-        return (
-          <div className="preview-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setOvernightConfirm(false); }}>
-            <div className="confirm-dialog" role="dialog" aria-modal="true">
-              <div className="confirm-title">Start auto run?</div>
-              <div className="confirm-text">
-                Run {countText} in {names}? This may take a long time.
-                Nothing is generated or changed — existing tests are only run, one screen after another.
-                {notifyAutoRun && teamsConfigured && <> The result will be sent to Teams when it finishes.</>}
-              </div>
-              <div className="confirm-actions">
-                <button className="secondary" onClick={() => setOvernightConfirm(false)}>Cancel</button>
-                <button className="primary" onClick={handleOvernightStart}><IconPlay size={14} /> Start</button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
 
       <div className="app-shell">
         <Sidebar
@@ -1693,19 +1666,19 @@ export default function App() {
                 <div className="segmented four">
                   <button className={`seg-btn${mode === "fetch" ? " active" : ""}`}
                     onClick={() => setMode("fetch")} disabled={busy} title="Fetch existing">
-                    Fetch
+                    <IconDownload size={15} /> <span>Fetch</span>
                   </button>
                   <button className={`seg-btn${mode === "generate" ? " active" : ""}`}
                     onClick={() => setMode("generate")} disabled={busy} title="Generate new">
-                    Generate
+                    <IconSpark size={15} /> <span>Generate</span>
                   </button>
                   <button className={`seg-btn${mode === "autorun" ? " active" : ""}`}
                     onClick={() => setMode("autorun")} disabled={busy} title="Auto generate: generate, push and run (unattended)">
-                    <IconBolt size={14} /> Auto generate
+                    <IconBolt size={15} /> <span>Auto generate</span>
                   </button>
                   <button className={`seg-btn${mode === "overnight" ? " active" : ""}`}
                     onClick={() => setMode("overnight")} disabled={busy} title="Auto run: run every screen of the chosen modules, nothing is generated or changed">
-                    <IconPlay size={13} /> Auto run
+                    <IconPlay size={15} /> <span>Auto run</span>
                   </button>
                 </div>
 
@@ -1799,7 +1772,7 @@ export default function App() {
                     <NotifySwitch checked={notifyAutoRun} onChange={setNotifyAutoRun} configured={teamsConfigured} disabled={busy} />
                     <button
                       className="primary full lg"
-                      onClick={handleOvernightAsk}
+                      onClick={handleOvernightStart}
                       disabled={busy || overnightModules.length === 0}
                     >
                       <IconPlay size={14} /> Start auto run
