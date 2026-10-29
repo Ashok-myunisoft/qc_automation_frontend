@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { trackKey } from "./tracking";
 import { IconCheck, IconClock, IconDownload, IconImage, IconRefresh, IconSheet, IconStop, IconTrash, IconX } from "./icons";
 
 // The History page talks to the backend over plain HTTP (GET services).
@@ -31,7 +32,7 @@ function saveBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export default function HistoryPage({ apiBase }) {
+export default function HistoryPage({ apiBase, filter, onClearFilter }) {
   const [rows, setRows] = useState(null);
   const [jobs, setJobs] = useState([]); // queued / running / recently-failed, from the backend's live job slips
   const [error, setError] = useState(null);
@@ -48,7 +49,7 @@ export default function HistoryPage({ apiBase }) {
     setLoading(true);
     try {
       const [historyRes, jobsRes] = await Promise.all([
-        fetch(`${apiBase}/api/history`),
+        fetch(`${apiBase}/api/history${filter ? "?limit=500" : ""}`),
         fetch(`${apiBase}/api/jobs`),
       ]);
       if (!historyRes.ok) throw new Error(`HTTP ${historyRes.status}`);
@@ -66,7 +67,7 @@ export default function HistoryPage({ apiBase }) {
     } finally {
       setLoading(false);
     }
-  }, [apiBase]);
+  }, [apiBase, filter]);
 
   useEffect(() => {
     load();
@@ -131,6 +132,17 @@ export default function HistoryPage({ apiBase }) {
     saveBlob(new Blob([preview.html], { type: "text/html;charset=utf-8" }), preview.filename);
   };
 
+  // Opened from the Tracking page: only the runs of that module (and screen).
+  const matchesFilter = (module, screens) => {
+    if (!filter) return true;
+    if (trackKey(module) !== trackKey(filter.module)) return false;
+    return !filter.screen || screens.some((x) => trackKey(x) === trackKey(filter.screen));
+  };
+  const rowScreens = (r) => [...(r.screens || []).map((x) => x.slug), ...(r.screen && !String(r.screen).includes(",") ? [r.screen] : [])];
+  const jobScreens = (j) => String(j.screen || "").split(",").map((x) => x.trim());
+  const shownRows = rows ? rows.filter((r) => matchesFilter(r.module, rowScreens(r))) : rows;
+  const shownJobs = jobs.filter((j) => matchesFilter(j.module, jobScreens(j)));
+
   return (
     <div className="history-page">
       {preview && (
@@ -176,14 +188,21 @@ export default function HistoryPage({ apiBase }) {
 
       {error && <div className="alert danger" style={{ marginBottom: 12 }}>{error}</div>}
 
-      {rows && rows.length === 0 && jobs.length === 0 && !error && (
-        <div className="empty-state">
-          <div className="empty-state-icon"><IconClock size={22} /></div>
-          <p>No runs yet.<br />Every run you make will appear here with its report and screenshots.</p>
+      {filter && (
+        <div className="history-filter">
+          <span>Showing runs of <strong>{filter.module}</strong>{filter.screen ? <> / <strong>{filter.screen}</strong></> : null}</span>
+          <button className="secondary" onClick={onClearFilter}><IconX size={13} /> Clear filter</button>
         </div>
       )}
 
-      {rows && (rows.length > 0 || jobs.length > 0) && (
+      {shownRows && shownRows.length === 0 && shownJobs.length === 0 && !error && (
+        <div className="empty-state">
+          <div className="empty-state-icon"><IconClock size={22} /></div>
+          <p>{filter ? <>No runs found for this selection.<br />Only the latest 500 runs are searched.</> : <>No runs yet.<br />Every run you make will appear here with its report and screenshots.</>}</p>
+        </div>
+      )}
+
+      {shownRows && (shownRows.length > 0 || shownJobs.length > 0) && (
         <div className="history-table-wrap">
           <table className="history-table">
             <thead>
@@ -197,7 +216,7 @@ export default function HistoryPage({ apiBase }) {
               </tr>
             </thead>
             <tbody>
-              {jobs.map((j) => (
+              {shownJobs.map((j) => (
                 <tr key={`job-${j.id}`}>
                   <td className="nowrap">{fmtDate(j.started_at)}</td>
                   <td>
@@ -225,7 +244,7 @@ export default function HistoryPage({ apiBase }) {
                   <td className="right col-delete"></td>
                 </tr>
               ))}
-              {rows.map((r) => (
+              {shownRows.map((r) => (
                 <tr key={r.id}>
                   <td className="nowrap">{fmtDate(r.created_at)}</td>
                   <td>

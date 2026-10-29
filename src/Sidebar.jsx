@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-// Left navigation — brand -> Test Environment -> Dashboard -> History.
+// Left navigation — brand -> Test Environment -> Dashboard -> History -> Tracking.
 // White theme, and it can collapse to an icon-only strip. The choice is
 // remembered across page refreshes.
 const STORAGE_KEY = "qc.sidebar.collapsed";
@@ -23,6 +23,12 @@ const DashIcon = () => (
     <rect x="14" y="3" width="7" height="5" rx="1" />
     <rect x="14" y="12" width="7" height="9" rx="1" />
     <rect x="3" y="16" width="7" height="5" rx="1" />
+  </Icon>
+);
+const TrackIcon = () => (
+  <Icon>
+    <path d="M3 3v18h18" />
+    <path d="M7 15l4-4 3 3 5-6" />
   </Icon>
 );
 const ChevronIcon = ({ collapsed }) => (
@@ -117,6 +123,15 @@ export default function Sidebar({ view, setView, envConfirmed, onOpenEnv, connec
         >
           <span className="sidebar-icon"><HistoryIcon /></span>
           <span className="sidebar-item-label">History</span>
+        </button>
+        <button
+          type="button"
+          className={`sidebar-item${view === "tracking" ? " active" : ""}`}
+          onClick={() => setView("tracking")}
+          title="Tracking"
+        >
+          <span className="sidebar-icon"><TrackIcon /></span>
+          <span className="sidebar-item-label">Tracking</span>
         </button>
       </div>
 

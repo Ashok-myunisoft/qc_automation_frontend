@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Sidebar from "./Sidebar";
 import HistoryPage, { apiBaseFromWs } from "./HistoryPage";
+import TrackingPage from "./TrackingPage";
+import { exactTime, lastRunOfModule, lastRunOfScreen, timeAgo } from "./tracking";
 import {
   IconAlert, IconArrowLeft, IconBolt, IconBox, IconCheck, IconChevronDown, IconChevronRight,
   IconCode, IconDownload, IconEdit, IconFile, IconImage, IconLayers, IconMaximize, IconMinimize,
@@ -8,7 +10,7 @@ import {
   IconTarget, IconX,
 } from "./icons";
 
-const WS_URL = "ws://217.217.249.121:8053/ws/qc";
+const WS_URL = "ws://localhost:8000/ws/qc";
 const API_BASE = apiBaseFromWs(WS_URL);
 
 // Identifies this browser page to the backend. It stays the same across automatic reconnects,
@@ -231,7 +233,7 @@ function formatDuration(sec) {
 const catKey = (s) => (s || "").trim().toLowerCase();
 
 // A text box with a dropdown of suggestions. You can pick one OR type any name freely.
-function PickOrType({ value, onChange, options, placeholder, disabled, onPick, onKeyDown, onBlur, loading, loadingText }) {
+function PickOrType({ value, onChange, options, placeholder, disabled, onPick, onKeyDown, onBlur, meta }) {
   const [open, setOpen] = useState(false);
   const q = catKey(value);
   const shown = (options || []).filter((o) => catKey(o).includes(q)).slice(0, 200);
@@ -240,7 +242,7 @@ function PickOrType({ value, onChange, options, placeholder, disabled, onPick, o
       <input
         type="text"
         className="combobox-input"
-        placeholder={loading ? (loadingText || "Loading from repo...") : placeholder}
+        placeholder={placeholder}
         value={value}
         disabled={disabled}
         onChange={(e) => { onChange(e.target.value); setOpen(true); }}
@@ -248,18 +250,7 @@ function PickOrType({ value, onChange, options, placeholder, disabled, onPick, o
         onKeyDown={onKeyDown}
         onBlur={() => { setTimeout(() => setOpen(false), 120); if (onBlur) onBlur(); }}
       />
-      <span className="combobox-caret">
-        {loading ? (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-label="loading">
-            <circle cx="12" cy="12" r="9" opacity="0.25" />
-            <path d="M21 12a9 9 0 0 0-9-9">
-              <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite" />
-            </path>
-          </svg>
-        ) : (
-          <IconChevronDown size={16} />
-        )}
-      </span>
+      <span className="combobox-caret"><IconChevronDown size={16} /></span>
       {open && !disabled && shown.length > 0 && (
         <div className="combobox-list">
           {shown.map((o) => (
@@ -274,7 +265,14 @@ function PickOrType({ value, onChange, options, placeholder, disabled, onPick, o
                 setOpen(false);
               }}
             >
-              <span>{o}</span>
+              {meta ? (
+                <span className="combobox-two-line">
+                  <span>{o}</span>
+                  <span className="combobox-meta" title={meta(o).title}>{meta(o).text}</span>
+                </span>
+              ) : (
+                <span>{o}</span>
+              )}
             </div>
           ))}
         </div>
@@ -399,7 +397,39 @@ function ScriptPopup({ title, launcherExtras, headExtras, children }) {
   );
 }
 
-function EnvDrawer({ envDraft, setEnvDraft, onSave, onClose }) {
+// The office only uses these two prefixes; the user picks one and types the rest of the address.
+const URL_PREFIXES = ["http://", "https://"];
+const splitBaseUrl = (full) => {
+  const v = (full || "").trim();
+  const prefix = URL_PREFIXES.find((p) => v.toLowerCase().startsWith(p));
+  return prefix
+    ? { prefix, host: v.slice(prefix.length) }
+    : { prefix: URL_PREFIXES[0], host: v };
+};
+
+// "Send the result to Teams when finished" - off by default, chosen per run.
+function NotifySwitch({ checked, onChange, configured, disabled }) {
+  const unavailable = configured === false;
+  return (
+    <div className={`notify-row${unavailable ? " unavailable" : ""}`}>
+      <label className="notify-switch" title={unavailable ? "The Teams link is not set up on the server yet" : "Post a short summary to the Teams chat when this run finishes"}>
+        <input type="checkbox" checked={!!checked && !unavailable} disabled={disabled || unavailable}
+          onChange={(e) => onChange(e.target.checked)} />
+        <span className="notify-track"><span className="notify-thumb" /></span>
+        <span className="notify-label">Send result to Teams when finished</span>
+      </label>
+      {unavailable && <span className="notify-hint">Teams link not set on the server (TEAMS_WEBHOOK_URL).</span>}
+    </div>
+  );
+}
+
+function EnvDrawer({ envDraft, setEnvDraft, onSave, onClose, teams }) {
+  const { prefix: urlPrefix, host: urlHost } = splitBaseUrl(envDraft.baseUrl);
+  const setUrlParts = (prefix, host) => {
+    // if the user pastes a full URL into the host box, drop the typed prefix and keep the dropdown choice
+    const clean = host.replace(/^\s*https?:\/\//i, "");
+    setEnvDraft((d) => ({ ...d, baseUrl: clean ? prefix + clean : "", urlPrefix: prefix }));
+  };
   return (
     <div className="env-drawer-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="env-drawer-panel">
@@ -410,9 +440,19 @@ function EnvDrawer({ envDraft, setEnvDraft, onSave, onClose }) {
         <div className="env-drawer-body">
           <div>
             <label className="field-label">Base URL</label>
-            <input type="text"
-              value={envDraft.baseUrl}
-              onChange={(e) => setEnvDraft((d) => ({ ...d, baseUrl: e.target.value }))} />
+            <div className="base-url-row">
+              <select
+                className="base-url-prefix"
+                value={envDraft.urlPrefix || urlPrefix}
+                onChange={(e) => setUrlParts(e.target.value, urlHost)}
+              >
+                {URL_PREFIXES.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+              <input type="text"
+                className="base-url-host"
+                value={urlHost}
+                onChange={(e) => setUrlParts(envDraft.urlPrefix || urlPrefix, e.target.value)} />
+            </div>
           </div>
           <div>
             <label className="field-label">Database name</label>
@@ -435,6 +475,15 @@ function EnvDrawer({ envDraft, setEnvDraft, onSave, onClose }) {
           <button className="primary full env-drawer-save" onClick={onSave}>
             Save
           </button>
+          {teams && (
+            <div className="teams-box">
+              <div className="teams-title">Teams notifications</div>
+              <div className="teams-status">
+                <span className={`track-dot ${teams.configured ? "fresh" : teams.configured === false ? "stale" : "never"}`} />
+                {teams.configured ? "Connected to a Teams chat" : teams.configured === false ? "Not set up on the server" : "Checking…"}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -442,7 +491,13 @@ function EnvDrawer({ envDraft, setEnvDraft, onSave, onClose }) {
 }
 
 export default function App() {
-  const [view, setView]       = useState("dashboard"); // "dashboard" | "history"
+  const [view, setView]       = useState("dashboard"); // "dashboard" | "history" | "tracking"
+  const [teamsConfigured, setTeamsConfigured] = useState(null);   // null = not known yet
+  const [notifyAutoRun, setNotifyAutoRun] = useState(false);        // "send result to Teams" - per run, off by default
+  const [notifyAutoGen, setNotifyAutoGen] = useState(false);
+  const [lastRuns, setLastRuns] = useState(null);         // {modules, screens} from /api/tracking
+  const [trackingError, setTrackingError] = useState("");
+  const [historyFilter, setHistoryFilter] = useState(null); // {module, screen?} - set when opened from Tracking
   const [scope, setScope]     = useState("screen");
   const [mode, setMode]       = useState("fetch");
   const [moduleName, setModuleName] = useState("");
@@ -491,7 +546,7 @@ export default function App() {
   const [openScenarios, setOpenScenarios] = useState([]);
 
   const [envMenuOpen, setEnvMenuOpen] = useState(false);
-  const [envDraft, setEnvDraft] = useState({ baseUrl: "", dbName: "", userName: "", password: "" });
+  const [envDraft, setEnvDraft] = useState({ baseUrl: "", urlPrefix: "http://", dbName: "", userName: "", password: "" });
   const [envConfirmed, setEnvConfirmed] = useState(null);
 
   // Live list of modules / screens from the repo (for the dropdowns).
@@ -885,6 +940,72 @@ export default function App() {
   // ------------------------------------------------------------------
   // Live catalog (module / screen dropdowns). Typing a name is still allowed.
   // ------------------------------------------------------------------
+  // When was each module / screen last run (read from History). Reloaded on start, every minute,
+  // when a run finishes and whenever the Tracking page is opened.
+  const loadTracking = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/tracking`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setLastRuns(await res.json());
+      setTrackingError("");
+    } catch (e) {
+      setTrackingError(e.message);
+    }
+  };
+  useEffect(() => {
+    loadTracking();
+    const t = setInterval(loadTracking, 60000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => { if (phase === "done" || view === "tracking") loadTracking(); }, [phase, view]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/notify/status`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setTeamsConfigured(!!(await res.json()).configured);
+      } catch { setTeamsConfigured(null); }
+    })();
+  }, []);
+  const openHistoryFor = (filter) => { setHistoryFilter(filter); setView("history"); };
+  // Tracking page -> run only the ticked screens (the overnight run, limited to these screens).
+  const runFromTracking = (screens, notify) => {
+    if (!envConfirmed) {
+      setEnvMenuOpen(true);
+      return { ok: false, reason: "Set the test environment first (Settings → Test Environment), then run again." };
+    }
+    if (busy) return { ok: false, reason: "A run is already in progress. Wait for it to finish first." };
+    const modules = [...new Set(screens.map((s) => s.module))];
+    resetRun();
+    if (!send({ action: "overnight_run", modules, screens, notify: !!notify })) {
+      return { ok: false, reason: "Not connected to the backend right now." };
+    }
+    setMode("overnight");
+    setPhase("auto_running");
+    log(`starting run of ${screens.length} selected screen(s) in ${modules.length} module(s) — one after another, nothing is generated or changed...`, "secondary");
+    setView("dashboard");
+    return { ok: true };
+  };
+  // Tracking page -> open one screen on the Dashboard (Fetch), module and screen already filled in.
+  const openInDashboard = (module, screenName) => {
+    if (busy) return { ok: false, reason: "A run is in progress. Wait for it to finish first." };
+    if (hasArtifacts && phase === "awaiting_approval") {
+      return { ok: false, reason: "There are generated files waiting for approval on the Dashboard. Approve or reject them first." };
+    }
+    if (hasArtifacts) { resetRun(); send({ action: "reject" }); setPhase("idle"); }
+    setMode("fetch");
+    setScope("screen");
+    setModuleName(module);
+    setScreen(screenName);
+    setView("dashboard");
+    return { ok: true };
+  };
+  const changeView = (v) => { if (v === "history") setHistoryFilter(null); setView(v); };
+  const lastRunMeta = (iso) => (iso ? { text: `Last run: ${timeAgo(iso)}`, title: exactTime(iso) } : { text: "Never run", title: "No run in History yet" });
+  const moduleMeta = (name) => lastRunMeta(lastRunOfModule(lastRuns, name));
+  const screenMeta = (name) => lastRunMeta(lastRunOfScreen(lastRuns, moduleName, name));
+
   const refreshCatalog = () => {
     if (send({ action: "list_catalog", refresh: true })) setCatalogLoading(true);
   };
@@ -1025,7 +1146,7 @@ export default function App() {
         return;
       }
       resetRun();
-      const sent = send({ action: "auto_run", scope: "module", modules: list, request: userRequest });
+      const sent = send({ action: "auto_run", scope: "module", modules: list, request: userRequest, notify: notifyAutoGen });
       if (sent) {
         setPhase("auto_running");
         log(`starting auto generate for ${list.length} module(s) — generate and push will follow on their own (nothing is run)...`, "secondary");
@@ -1042,6 +1163,7 @@ export default function App() {
         module: moduleName.trim(),
         screen: screen.trim(),
         request: userRequest,
+        notify: notifyAutoGen,
       });
       if (sent) {
         setPhase("auto_running");
@@ -1114,6 +1236,7 @@ export default function App() {
     if (!envMenuOpen) {
       setEnvDraft((prev) => ({
         baseUrl:  envConfirmed?.baseUrl  ?? prev.baseUrl,
+        urlPrefix: splitBaseUrl(envConfirmed?.baseUrl ?? prev.baseUrl).prefix,
         dbName:   envConfirmed?.dbName   ?? prev.dbName,
         userName: envConfirmed?.userName ?? prev.userName,
         password: "",
@@ -1123,7 +1246,8 @@ export default function App() {
   };
   const handleSaveEnv = () => {
     const { baseUrl, dbName, userName, password } = envDraft;
-    if (!baseUrl.trim() || !dbName.trim() || !userName.trim() || !password) {
+    const { host: hostPart } = splitBaseUrl(baseUrl);
+    if (!hostPart.trim() || !dbName.trim() || !userName.trim() || !password) {
       setAlert({ message: "all four fields are required — baseUrl, DB name, username, password.", tone: "danger" });
       return;
     }
@@ -1152,7 +1276,22 @@ export default function App() {
     setReportAvailable(false);
     setOpenScenarios([]);
     setPhase("running");
-    if (!send({ action: "run" })) {
+    // Fetched screens: edits are run-only (never pushed). Send the edited feature text with the run.
+    const runPayload = { action: "run" };
+    if (artifacts?.origin === "fetch") {
+      const runEdits = [];
+      if (artifacts?.scope === "module" && artifacts?.screens) {
+        artifacts.screens.forEach((s, i) => {
+          const f = edits[`${i}:feature`];
+          if (typeof f === "string") runEdits.push({ module: s.module, index: s.moduleIndex, feature: f });
+        });
+      } else {
+        const f = edits["0:feature"];
+        if (typeof f === "string") runEdits.push({ feature: f });
+      }
+      if (runEdits.length) runPayload.edits = runEdits;
+    }
+    if (!send(runPayload)) {
       runStartingRef.current = false;
       log("Could not start the run: not connected to the backend.", "danger");
       setPhase("awaiting_review");
@@ -1218,7 +1357,7 @@ export default function App() {
     setOvernightConfirm(false);
     const list = overnightModules.slice();
     resetRun();
-    if (send({ action: "overnight_run", modules: list })) {
+    if (send({ action: "overnight_run", modules: list, notify: notifyAutoRun })) {
       setPhase("auto_running");
       log(`starting overnight run for ${list.length} module(s) — every screen is run one after another, nothing is generated or changed...`, "secondary");
     }
@@ -1286,6 +1425,12 @@ export default function App() {
   const canApprove   = hasArtifacts && phase === "awaiting_approval";
   const showLog      = lines.length > 0 || phase === "resolving" || phase === "running" || phase === "sweeping" || phase === "auto_running" || phase === "done";
   const busy         = phase === "resolving" || phase === "running" || phase === "sweeping" || phase === "auto_running";
+  // The Teams switch belongs to one run: it stays on (greyed out) while that run is going and goes back to off when it ends.
+  const wasBusyRef = useRef(false);
+  useEffect(() => {
+    if (wasBusyRef.current && !busy) { setNotifyAutoRun(false); setNotifyAutoGen(false); }
+    wasBusyRef.current = busy;
+  }, [busy]);
   const showConflict = !!conflict && phase === "awaiting_conflict";
   const showSweepConfirm = !!sweepDiscovery && phase === "awaiting_sweep_confirm";
   const logReadyForHighlight = phase === "done" && !busy;
@@ -1327,6 +1472,7 @@ export default function App() {
           setEnvDraft={setEnvDraft}
           onSave={handleSaveEnv}
           onClose={() => setEnvMenuOpen(false)}
+          teams={{ configured: teamsConfigured }}
         />
       )}
 
@@ -1341,6 +1487,7 @@ export default function App() {
               <div className="confirm-text">
                 Run {countText} in {names}? This may take a long time.
                 Nothing is generated or changed — existing tests are only run, one screen after another.
+                {notifyAutoRun && teamsConfigured && <> The result will be sent to Teams when it finishes.</>}
               </div>
               <div className="confirm-actions">
                 <button className="secondary" onClick={() => setOvernightConfirm(false)}>Cancel</button>
@@ -1354,7 +1501,7 @@ export default function App() {
       <div className="app-shell">
         <Sidebar
           view={view}
-          setView={setView}
+          setView={changeView}
           envConfirmed={envConfirmed}
           onOpenEnv={handleToggleEnvMenu}
           connected={linkOk}
@@ -1364,7 +1511,7 @@ export default function App() {
           <header className="page-header">
             <nav className="crumbs" aria-label="Breadcrumb">
               <span className={`crumb${view === "dashboard" && crumb ? "" : " current"}`}>
-                {view === "history" ? "History" : "Dashboard"}
+                {view === "history" ? "History" : view === "tracking" ? "Tracking" : "Dashboard"}
               </span>
               {view === "dashboard" && crumb && (
                 <>
@@ -1389,7 +1536,23 @@ export default function App() {
             </div>
           </header>
 
-          {view === "history" && <HistoryPage apiBase={API_BASE} />}
+          {view === "history" && <HistoryPage apiBase={API_BASE} filter={historyFilter} onClearFilter={() => setHistoryFilter(null)} />}
+          {view === "tracking" && (
+            <TrackingPage
+              catalog={catalog}
+              catalogLoading={catalogLoading}
+              catalogError={catalogError}
+              lastRuns={lastRuns}
+              trackingError={trackingError}
+              apiBase={API_BASE}
+              busy={busy}
+              teamsConfigured={teamsConfigured}
+              onRunSelected={runFromTracking}
+              onOpenInDashboard={openInDashboard}
+              onRefresh={() => { refreshCatalog(); loadTracking(); }}
+              onOpenHistory={openHistoryFor}
+            />
+          )}
 
           <div className="dashboard" style={{ display: view === "dashboard" ? undefined : "none" }}>
 
@@ -1443,6 +1606,7 @@ export default function App() {
                         value={chipDraft}
                         onChange={setChipDraft}
                         options={moduleNames}
+                        meta={moduleMeta}
                         onPick={(o) => {
                           setModuleChips((prev) => (prev.includes(o) ? prev : [...prev, o]));
                           setChipDraft("");
@@ -1450,8 +1614,6 @@ export default function App() {
                         onKeyDown={handleChipInputKeyDown}
                         onBlur={addModuleChip}
                         disabled={busy}
-                        loading={catalogLoading}
-                        loadingText="Loading modules from repo..."
                       />
                       {catalogError && <p className="hint hint-tight">Module list unavailable — type the names instead.</p>}
                       {nameHint("module", chipDraft, moduleNames) && (
@@ -1484,14 +1646,13 @@ export default function App() {
                         value={moduleName}
                         onChange={setModuleName}
                         options={moduleNames}
+                        meta={moduleMeta}
                         onPick={(o) => {
                           const m = findCatalogModule(o);
                           const keep = m && (m.screens || []).some((s) => catKey(s) === catKey(screen));
                           if (!keep) setScreen("");
                         }}
                         disabled={busy}
-                        loading={catalogLoading}
-                        loadingText="Loading modules from repo..."
                       />
                       {catalogError && <p className="hint hint-tight">Module list unavailable — type the name instead.</p>}
                       {nameHint("module", moduleName, moduleNames) && (
@@ -1507,9 +1668,8 @@ export default function App() {
                         value={screen}
                         onChange={setScreen}
                         options={screenOptions}
+                        meta={screenMeta}
                         disabled={busy}
-                        loading={catalogLoading}
-                        loadingText="Loading screens from repo..."
                       />
                       {nameHint("screen", screen, screenOptions) && (
                         <p className="hint hint-tight">{nameHint("screen", screen, screenOptions)}</p>
@@ -1581,6 +1741,7 @@ export default function App() {
                       <textarea rows={3} placeholder="e.g. Generate tests for creating and updating this screen" value={userRequest}
                         onChange={(e) => setUserRequest(e.target.value)} disabled={busy} />
                     </div>
+                    <NotifySwitch checked={notifyAutoGen} onChange={setNotifyAutoGen} configured={teamsConfigured} disabled={busy} />
                     <button
                       className="primary full lg"
                       onClick={handleAutoRun}
@@ -1600,14 +1761,13 @@ export default function App() {
                         value={overnightDraft}
                         onChange={setOvernightDraft}
                         options={moduleNames}
+                        meta={moduleMeta}
                         onPick={(o) => addOvernightModule(o)}
                         onKeyDown={(e) => {
                           if (e.key === "Enter" || e.key === ",") { e.preventDefault(); addOvernightModule(); }
                         }}
                         onBlur={() => addOvernightModule()}
                         disabled={busy}
-                        loading={catalogLoading}
-                        loadingText="Loading modules from repo..."
                       />
                       {catalogError && <p className="hint hint-tight">Module list unavailable — type the names instead.</p>}
                       {nameHint("module", overnightDraft, moduleNames) && (
@@ -1636,6 +1796,7 @@ export default function App() {
                         </p>
                       );
                     })()}
+                    <NotifySwitch checked={notifyAutoRun} onChange={setNotifyAutoRun} configured={teamsConfigured} disabled={busy} />
                     <button
                       className="primary full lg"
                       onClick={handleOvernightAsk}
@@ -1908,6 +2069,10 @@ export default function App() {
                     const featureEditing = !!editing[featureKey];
                     const scriptEditing  = !!editing[scriptKey];
 
+                    // Generated: edit while awaiting approval (then Approve & push, then Run).
+                    // Fetched: edit the feature file only, while ready to run; no Approve & push - just Run.
+                    const canEditFeature = (artifacts.origin === "generate" && phase === "awaiting_approval")
+                      || (artifacts.origin === "fetch" && phase === "awaiting_review");
                     const canEdit = artifacts.origin === "generate" && phase === "awaiting_approval";
                     const beginEdit = (key) => setEditing((e) => ({ ...e, [key]: true }));
                     const cancelEdit = (key) => {
@@ -1927,9 +2092,11 @@ export default function App() {
                           headExtras={
                             <>
                               {typeof edits[featureKey] === "string" && !featureEditing && (
-                                <span className="edited-badge">edited</span>
+                                <span className="edited-badge" title={artifacts.origin === "fetch" ? "Edited copy runs locally; nothing is pushed to GitLab" : undefined}>
+                                  {artifacts.origin === "fetch" ? "edited · run only" : "edited"}
+                                </span>
                               )}
-                              {canEdit && !featureEditing ? (
+                              {canEditFeature && !featureEditing ? (
                                 <button
                                   className="panel-edit-btn"
                                   title="Edit feature file"
