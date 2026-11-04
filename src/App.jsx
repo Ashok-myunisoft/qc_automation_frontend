@@ -566,6 +566,7 @@ export default function App() {
   const [refineText, setRefineText] = useState("");
   const [refining, setRefining] = useState(false);
   const [refineThread, setRefineThread] = useState([]);   // chat-style history: what was asked and what was done
+  const [refineProgress, setRefineProgress] = useState(""); // what the backend is doing right now (shown while refining)
   const [undoMap, setUndoMap] = useState({});             // screen position -> an Undo step exists
   const refineThreadEndRef = useRef(null);
 
@@ -749,9 +750,12 @@ export default function App() {
         setCatalog(Array.isArray(msg.modules) ? msg.modules : []);
         setCatalogError(msg.error ? String(msg.error) : "");
         setCatalogLoading(false);
+      } else if (msg.type === "refine_progress") {
+        setRefineProgress(String(msg.text || ""));
       } else if (msg.type === "refine_done") {
         const sel = refineSelRef.current || 0;
         setRefining(false);
+        setRefineProgress("");
         setSelectedScreen(sel);
         setUndoMap((m) => ({ ...m, [msg.index ?? sel]: !!msg.can_undo }));
         setRefineThread((t) => [...t, {
@@ -761,6 +765,7 @@ export default function App() {
           answers: msg.answers || [],
           applied: msg.applied || [],
           skipped: msg.skipped || [],
+          diff: msg.diff && typeof msg.diff === "object" ? msg.diff : null,
         }]);
         if (msg.changed) {
           setEdits((es) => {
@@ -970,6 +975,7 @@ export default function App() {
     setOvernightSummary(null);
     setRefineText("");
     setRefining(false);
+    setRefineProgress("");
     setRefineThread([]);
     setUndoMap({});
     setPushingBoth(false);
@@ -1402,11 +1408,18 @@ export default function App() {
     const payload = { action: "refine", text, ...target.payload };
     const f = edits[`${target.sel}:feature`];
     if (typeof f === "string") payload.feature = f;
+    const sc = edits[`${target.sel}:script`];
+    if (typeof sc === "string") payload.script = sc;   // the hand-edited script is the base too (it was dropped before)
     refineSelRef.current = target.sel;
     if (send(payload)) {
       setRefining(true);
       setRefineThread((t) => [...t, { who: "you", text }]);
     }
+  };
+
+  const handleRefineStop = () => {
+    if (!refining) return;
+    send({ action: "refine_stop" });
   };
 
   const handleRefineUndo = () => {
@@ -2265,11 +2278,26 @@ export default function App() {
                                 {!m.answers.length && !m.applied.length && !m.skipped.length && (
                                   <div className="refine-line">Nothing was changed.</div>
                                 )}
+                                {m.diff && (m.diff.feature || m.diff.script) && (
+                                  <details style={{ marginTop: 6 }}>
+                                    <summary className="refine-line muted" style={{ cursor: "pointer" }}>View what changed</summary>
+                                    {["feature", "script"].filter((k) => m.diff[k] && m.diff[k].length).map((k) => (
+                                      <div key={k} style={{ marginTop: 6 }}>
+                                        <div className="refine-line muted">{k === "feature" ? "Feature file" : "Script"}</div>
+                                        <pre style={{ margin: "4px 0 0", padding: "6px 8px", maxHeight: 220, overflow: "auto", fontSize: 11.5, lineHeight: 1.45, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 6 }}>
+                                          {m.diff[k].map((ln, j) => (
+                                            <div key={j} style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", color: ln.startsWith("+") ? "var(--text-success)" : ln.startsWith("-") ? "var(--text-danger)" : "var(--text-muted)" }}>{ln === "" ? " " : ln}</div>
+                                          ))}
+                                        </pre>
+                                      </div>
+                                    ))}
+                                  </details>
+                                )}
                                 {m.changed && !m.undo && <div className="refine-line muted">Approve and push to save it, then Run.</div>}
                               </div>
                             )
                           ))}
-                          {refining && <div className="refine-msg bot"><div className="refine-line muted">Working on it… (a deeper run can take a few minutes — progress shows in the log)</div></div>}
+                          {refining && <div className="refine-msg bot"><div className="refine-line muted">Working on it… {refineProgress ? `${refineProgress} ` : ""}(a deeper run can take a few minutes — more detail shows in the log)</div></div>}
                           <div ref={refineThreadEndRef} />
                         </div>
                       )}
@@ -2293,6 +2321,7 @@ export default function App() {
                           >
                             <IconSpark size={14} /> {refining ? "Working..." : "Send"}
                           </button>
+                          {refining && <button onClick={handleRefineStop} title="Stop what the Refine box is doing now">Stop</button>}
                           <button disabled={refining || !undoMap[artifacts?.scope === "module" ? selectedScreen : 0]} onClick={handleRefineUndo}>Undo last change</button>
                         </div>
                       </div>
