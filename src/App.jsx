@@ -557,6 +557,9 @@ export default function App() {
   // Refine box (review stage).
   const [refineText, setRefineText] = useState("");
   const [refining, setRefining] = useState(false);
+  const [refineThread, setRefineThread] = useState([]);   // chat-style history: what was asked and what was done
+  const [undoMap, setUndoMap] = useState({});             // screen position -> an Undo step exists
+  const refineThreadEndRef = useRef(null);
 
   // Overnight run.
   const [overnightModules, setOvernightModules] = useState([]);
@@ -731,6 +734,15 @@ export default function App() {
         const sel = refineSelRef.current || 0;
         setRefining(false);
         setSelectedScreen(sel);
+        setUndoMap((m) => ({ ...m, [msg.index ?? sel]: !!msg.can_undo }));
+        setRefineThread((t) => [...t, {
+          who: "bot",
+          changed: !!msg.changed,
+          undo: !!msg.undo,
+          answers: msg.answers || [],
+          applied: msg.applied || [],
+          skipped: msg.skipped || [],
+        }]);
         if (msg.changed) {
           setEdits((es) => {
             const n = { ...es };
@@ -739,8 +751,8 @@ export default function App() {
             return n;
           });
           setEditing((e) => ({ ...e, [`${sel}:feature`]: false, [`${sel}:script`]: false }));
-          setRefineText("");
         }
+        if (msg.changed || (msg.answers && msg.answers.length)) setRefineText("");
       } else if (msg.type === "overnight_summary") {
         setOvernightSummary(msg);
       } else if (msg.type === "error") {
@@ -933,6 +945,8 @@ export default function App() {
     setOvernightSummary(null);
     setRefineText("");
     setRefining(false);
+    setRefineThread([]);
+    setUndoMap({});
     queueRef.current = { active: false, queue: [], index: 0, action: null, screensCount: 0 };
   };
 
@@ -1300,23 +1314,46 @@ export default function App() {
   // REFINE — type a change in plain words at the review stage (generated or fetched).
   // The backend edits the shown screen only; afterwards Approve/Push and Run work again.
   // ------------------------------------------------------------------
-  const handleRefine = () => {
-    const text = refineText.trim();
-    if (!text || refining) return;
-    const payload = { action: "refine", text };
+  const refineTarget = () => {
+    const payload = {};
     let sel = 0;
     if (artifacts?.scope === "module" && artifacts?.screens) {
       sel = selectedScreen;
       const cur = artifacts.screens[sel];
-      if (!cur) return;
+      if (!cur) return null;
       payload.module = cur.module;
       payload.index  = cur.moduleIndex;
     }
-    const f = edits[`${sel}:feature`];
-    if (typeof f === "string") payload.feature = f;
-    refineSelRef.current = sel;
-    if (send(payload)) setRefining(true);
+    return { payload, sel };
   };
+
+  // `override` is used by the quick buttons; otherwise the typed text is sent.
+  const handleRefine = (override) => {
+    const text = (typeof override === "string" ? override : refineText).trim();
+    if (!text || refining) return;
+    const target = refineTarget();
+    if (!target) return;
+    const payload = { action: "refine", text, ...target.payload };
+    const f = edits[`${target.sel}:feature`];
+    if (typeof f === "string") payload.feature = f;
+    refineSelRef.current = target.sel;
+    if (send(payload)) {
+      setRefining(true);
+      setRefineThread((t) => [...t, { who: "you", text }]);
+    }
+  };
+
+  const handleRefineUndo = () => {
+    if (refining) return;
+    const target = refineTarget();
+    if (!target) return;
+    refineSelRef.current = target.sel;
+    if (send({ action: "refine_undo", ...target.payload })) setRefining(true);
+  };
+
+  useEffect(() => {
+    if (refineThreadEndRef.current) refineThreadEndRef.current.scrollIntoView({ block: "nearest" });
+  }, [refineThread, refining]);
 
   // ------------------------------------------------------------------
   // OVERNIGHT RUN — run only (no generate / append / modify), every screen of the chosen
@@ -2133,13 +2170,49 @@ export default function App() {
                     );
                   })()}
 
-                  {hasArtifacts && (phase === "awaiting_approval" || phase === "awaiting_review") && (
+                  {hasArtifacts && (refining || phase === "awaiting_approval" || phase === "awaiting_review" || phase === "done") && (
                     <div className="refine-box">
                       <label className="field-label">Refine this screen</label>
+                      {refineThread.length > 0 && (
+                        <div className="refine-thread">
+                          {refineThread.map((m, i) => (
+                            m.who === "you" ? (
+                              <div key={i} className="refine-msg you">{m.text}</div>
+                            ) : (
+                              <div key={i} className="refine-msg bot">
+                                {m.answers.map((a, k) => <div key={`a${k}`} className="refine-line">{a}</div>)}
+                                {m.applied.map((a, k) => <div key={`o${k}`} className="refine-line ok">✓ {a}</div>)}
+                                {m.skipped.map((a, k) => <div key={`s${k}`} className="refine-line warn">⚠ {a}</div>)}
+                                {!m.answers.length && !m.applied.length && !m.skipped.length && (
+                                  <div className="refine-line">Nothing was changed.</div>
+                                )}
+                                {m.changed && !m.undo && <div className="refine-line muted">Approve and push to save it, then Run.</div>}
+                              </div>
+                            )
+                          ))}
+                          {refining && <div className="refine-msg bot"><div className="refine-line muted">Working on it… (a deeper run can take a few minutes — progress shows in the log)</div></div>}
+                          <div ref={refineThreadEndRef} />
+                        </div>
+                      )}
+                      <div className="refine-chips">
+                        <select
+                          className="refine-quick"
+                          value=""
+                          disabled={refining}
+                          onChange={(e) => { if (e.target.value) setRefineText(e.target.value); }}
+                        >
+                          <option value="">Quick options…</option>
+                          <option value="Add more scenarios for every field and flow that is not covered yet.">More scenarios</option>
+                          <option value="Add more test data rows (valid, invalid, boundary, past / present / future dates) to the existing scenarios.">More test data</option>
+                          <option value="Add negative and boundary scenarios for every field.">Negative &amp; boundary scenarios</option>
+                          <option value="Not satisfied with the coverage and the test data. Generate again, much more thoroughly.">Regenerate deeper</option>
+                        </select>
+                        <button disabled={refining || !undoMap[artifacts?.scope === "module" ? selectedScreen : 0]} onClick={handleRefineUndo}>Undo last change</button>
+                      </div>
                       <div className="refine-row">
                         <textarea
                           rows={2}
-                          placeholder={"Describe a change in plain words — e.g. \"use admin@test.com for the Email field\", \"add a comment: covers the 2025 tax rule\", \"add a scenario for a negative amount\""}
+                          placeholder="Type what you need for this screen…"
                           value={refineText}
                           onChange={(e) => setRefineText(e.target.value)}
                           onKeyDown={(e) => {
@@ -2149,11 +2222,11 @@ export default function App() {
                         />
                         <button
                           className="primary refine-send"
-                          onClick={handleRefine}
+                          onClick={() => handleRefine()}
                           disabled={refining || !refineText.trim()}
-                          title="Apply (Ctrl+Enter)"
+                          title="Send (Ctrl+Enter)"
                         >
-                          <IconSpark size={14} /> {refining ? "Applying..." : "Apply"}
+                          <IconSpark size={14} /> {refining ? "Working..." : "Send"}
                         </button>
                       </div>
                     </div>

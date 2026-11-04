@@ -627,6 +627,17 @@ button.primary:disabled, button.approve:disabled { box-shadow: none; }
 .refine-row { display: flex; gap: 10px; align-items: flex-end; }
 .refine-row textarea { flex: 1; min-width: 0; resize: vertical; }
 .refine-send { flex: none; height: 38px; }
+.refine-thread { display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow-y: auto; margin-bottom: 10px; padding: 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); }
+.refine-msg { max-width: 92%; padding: 8px 12px; border-radius: 12px; font-size: 13px; line-height: 1.5; word-break: break-word; }
+.refine-msg.you { align-self: flex-end; background: var(--bg-accent); color: var(--text-accent); border: 1px solid var(--border-accent2); }
+.refine-msg.bot { align-self: flex-start; background: var(--surface-1); border: 1px solid var(--border); }
+.refine-line + .refine-line { margin-top: 4px; }
+.refine-line.ok { color: var(--text-success); }
+.refine-line.warn { color: var(--text-warning); }
+.refine-line.muted { color: var(--text-muted); font-size: 12px; }
+.refine-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.refine-chips button { height: 32px; padding: 0 12px; font-size: 12.5px; }
+.refine-quick { height: 32px; padding: 0 10px; font-size: 12.5px; max-width: 220px; }
 
 /* ── OVERNIGHT RUN ─────────────────────────────────────────────── */
 .ov-stats { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
