@@ -233,7 +233,7 @@ function formatDuration(sec) {
 const catKey = (s) => (s || "").trim().toLowerCase();
 
 // A text box with a dropdown of suggestions. You can pick one OR type any name freely.
-function PickOrType({ value, onChange, options, placeholder, disabled, onPick, onKeyDown, onBlur, meta }) {
+function PickOrType({ value, onChange, options, placeholder, disabled, onPick, onKeyDown, onBlur, meta, loading, loadingText }) {
   const [open, setOpen] = useState(false);
   const q = catKey(value);
   const shown = (options || []).filter((o) => catKey(o).includes(q)).slice(0, 200);
@@ -242,7 +242,7 @@ function PickOrType({ value, onChange, options, placeholder, disabled, onPick, o
       <input
         type="text"
         className="combobox-input"
-        placeholder={placeholder}
+        placeholder={loading ? (loadingText || "Loading…") : placeholder}
         value={value}
         disabled={disabled}
         onChange={(e) => { onChange(e.target.value); setOpen(true); }}
@@ -250,7 +250,14 @@ function PickOrType({ value, onChange, options, placeholder, disabled, onPick, o
         onKeyDown={onKeyDown}
         onBlur={() => { setTimeout(() => setOpen(false), 120); if (onBlur) onBlur(); }}
       />
-      <span className="combobox-caret"><IconChevronDown size={16} /></span>
+      <span className="combobox-caret">
+        {loading ? <span className="mini-spin" aria-label={loadingText || "Loading"} /> : <IconChevronDown size={16} />}
+      </span>
+      {open && !disabled && loading && shown.length === 0 && (
+        <div className="combobox-list">
+          <div className="combobox-empty combobox-loading"><span className="mini-spin" /> {loadingText || "Loading…"}</div>
+        </div>
+      )}
       {open && !disabled && shown.length > 0 && (
         <div className="combobox-list">
           {shown.map((o) => (
@@ -553,6 +560,11 @@ export default function App() {
   const [catalog, setCatalog] = useState([]);            // [{module, screens:[...]}]
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState("");
+  // Generate / Auto generate read the SOURCE repo (a screen can be generated before it has any test);
+  // Fetch / Auto run read the QC repo (only screens that already have tests).
+  const [sourceCatalog, setSourceCatalog] = useState([]);   // [{module, screens:[...]}]
+  const [sourceLoading, setSourceLoading] = useState(false);
+  const [sourceError, setSourceError] = useState("");
 
   // Refine box (review stage).
   const [refineText, setRefineText] = useState("");
@@ -560,6 +572,16 @@ export default function App() {
   const [refineThread, setRefineThread] = useState([]);   // chat-style history: what was asked and what was done
   const [undoMap, setUndoMap] = useState({});             // screen position -> an Undo step exists
   const refineThreadEndRef = useRef(null);
+
+  // True from the Approve & push click until the push finishes. The backend reports the GitLab
+  // push as phase "running" too, so this is what tells a push apart from a real test run.
+  // Scenario count of every QC screen ({counts: {"module|screen": n}, status: "loading" | "ready"}), read by the backend
+  // from the feature files in the background. Shown on the Tracking page and in the Fetch / Auto run pick lists.
+  const [scenarioCounts, setScenarioCounts] = useState(null);
+
+  const [pushing, setPushing] = useState(false);
+  const pushingRef = useRef(false);
+  const setPushingBoth = (v) => { pushingRef.current = v; setPushing(v); };
 
   // Overnight run.
   const [overnightModules, setOvernightModules] = useState([]);
@@ -668,6 +690,7 @@ export default function App() {
         log(msg.text, msg.tone);
       } else if (msg.type === "status") {
         setPhase(msg.phase);
+        if (msg.phase !== "running" && pushingRef.current) setPushingBoth(false); // push finished
         if (msg.phase !== "done") setResult(null);
       } else if (msg.type === "discovery") {
         // Per-module breakdown before an unattended sweep — gate on this
@@ -727,9 +750,15 @@ export default function App() {
         setEnvMenuOpen(false);
         setAlert(null);
       } else if (msg.type === "catalog") {
-        setCatalog(Array.isArray(msg.modules) ? msg.modules : []);
-        setCatalogError(msg.error ? String(msg.error) : "");
-        setCatalogLoading(false);
+        if (msg.kind === "source") {
+          setSourceCatalog(Array.isArray(msg.modules) ? msg.modules : []);
+          setSourceError(msg.error ? String(msg.error) : "");
+          setSourceLoading(false);
+        } else {
+          setCatalog(Array.isArray(msg.modules) ? msg.modules : []);
+          setCatalogError(msg.error ? String(msg.error) : "");
+          setCatalogLoading(false);
+        }
       } else if (msg.type === "refine_done") {
         const sel = refineSelRef.current || 0;
         setRefining(false);
@@ -758,8 +787,14 @@ export default function App() {
       } else if (msg.type === "error") {
         setRefining(false);
         setCatalogLoading(false);
+        setSourceLoading(false);
         log(msg.message, "danger");
         setAlert({ message: msg.message, tone: "danger" });
+        if (pushingRef.current) {
+          // The push failed: put the Approve and push button back.
+          setPushingBoth(false);
+          setPhase("awaiting_approval");
+        }
         if (runStartingRef.current) {
           // The run never started: put the Run button back.
           runStartingRef.current = false;
@@ -798,6 +833,8 @@ export default function App() {
         try {
           sock.send(JSON.stringify({ action: "list_catalog" }));
           setCatalogLoading(true);
+          sock.send(JSON.stringify({ action: "list_catalog", kind: "source" }));
+          setSourceLoading(true);
         } catch (e) { /* ignore */ }
         stopHeartbeat();
         heartbeatTimer = setInterval(() => {
@@ -947,6 +984,7 @@ export default function App() {
     setRefining(false);
     setRefineThread([]);
     setUndoMap({});
+    setPushingBoth(false);
     queueRef.current = { active: false, queue: [], index: 0, action: null, screensCount: 0 };
   };
 
@@ -981,6 +1019,24 @@ export default function App() {
       } catch { setTeamsConfigured(null); }
     })();
   }, []);
+  const loadScenarioCounts = async (refresh = false) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/scenario-counts${refresh ? "?refresh=true" : ""}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setScenarioCounts(await res.json());
+    } catch (e) {
+      setScenarioCounts((cur) => (cur ? { ...cur, status: "ready" } : null)); // keep what we have, stop polling
+    }
+  };
+  // (re)load when the module list arrives, and keep polling while the backend is still counting
+  useEffect(() => { if (catalog.length) loadScenarioCounts(); }, [catalog]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (scenarioCounts?.status !== "loading") return undefined;
+    const t = setTimeout(() => loadScenarioCounts(), 3000);
+    return () => clearTimeout(t);
+  }, [scenarioCounts]); // eslint-disable-line react-hooks/exhaustive-deps
+  const scenarioWord = (n) => `${n} scenario${n === 1 ? "" : "s"}`;
+  const withScenarios = (meta, n) => (n == null ? meta : { ...meta, text: `${meta.text} · ${scenarioWord(n)}` });
   const openHistoryFor = (filter) => { setHistoryFilter(filter); setView("history"); };
   // Tracking page -> run only the ticked screens (the overnight run, limited to these screens).
   const runFromTracking = (screens, notify) => {
@@ -1016,14 +1072,38 @@ export default function App() {
   };
   const changeView = (v) => { if (v === "history") setHistoryFilter(null); setView(v); };
   const lastRunMeta = (iso) => (iso ? { text: `Last run: ${timeAgo(iso)}`, title: exactTime(iso) } : { text: "Never run", title: "No run in History yet" });
-  const moduleMeta = (name) => lastRunMeta(lastRunOfModule(lastRuns, name));
-  const screenMeta = (name) => lastRunMeta(lastRunOfScreen(lastRuns, moduleName, name));
-
-  const refreshCatalog = () => {
-    if (send({ action: "list_catalog", refresh: true })) setCatalogLoading(true);
+  // Fetch / Auto run lists are the QC repo, so those options also show how many scenarios the screen has.
+  const moduleScenarios = (name) => {
+    if (fromSource || !scenarioCounts) return null;
+    const m = findCatalogModule(name);
+    if (!m) return null;
+    const known = (m.screens || []).map((sc) => scenarioCounts.counts?.[`${m.module}|${sc}`]).filter((n) => n != null);
+    return known.length ? known.reduce((a, b) => a + b, 0) : null;
   };
-  const moduleNames = useMemo(() => catalog.map((m) => m.module), [catalog]);
-  const findCatalogModule = (name) => catalog.find((m) => catKey(m.module) === catKey(name));
+  const screenScenarios = (name) => {
+    if (fromSource || !scenarioCounts) return null;
+    const m = findCatalogModule(moduleName);
+    const n = m ? scenarioCounts.counts?.[`${m.module}|${name}`] : null;
+    return n == null ? null : n;
+  };
+  const moduleMeta = (name) => withScenarios(lastRunMeta(lastRunOfModule(lastRuns, name)), moduleScenarios(name));
+  const screenMeta = (name) => withScenarios(lastRunMeta(lastRunOfScreen(lastRuns, moduleName, name)), screenScenarios(name));
+
+  // kind "qc" (default) or "source"
+  const refreshCatalog = (kind) => {
+    if (kind === "source") {
+      if (send({ action: "list_catalog", refresh: true, kind: "source" })) setSourceLoading(true);
+    } else if (send({ action: "list_catalog", refresh: true })) {
+      setCatalogLoading(true);
+    }
+  };
+  // Generate and Auto generate pick from the source repo; Fetch and Auto run from the QC repo.
+  const fromSource     = mode === "generate" || mode === "autorun";
+  const activeCatalog = fromSource ? sourceCatalog : catalog;
+  const activeLoading = fromSource ? sourceLoading : catalogLoading;
+  const activeError   = fromSource ? sourceError   : catalogError;
+  const moduleNames = useMemo(() => activeCatalog.map((m) => m.module), [activeCatalog]);
+  const findCatalogModule = (name) => activeCatalog.find((m) => catKey(m.module) === catKey(name));
   const screenOptions = (() => {
     const m = findCatalogModule(moduleName);
     return m ? m.screens || [] : [];
@@ -1031,9 +1111,14 @@ export default function App() {
   const nameHint = (kind, value, known) => {
     // kind: "module" | "screen"; known: list of valid names or null when nothing to check against
     if (!value.trim()) return null;
-    if (catalogError) return null;
+    if (activeError) return null;
     if (!known || known.length === 0) return null;
     if (known.some((k) => catKey(k) === catKey(value))) return null;
+    if (fromSource) {
+      return kind === "module"
+        ? "Not in the source repo list. Generate will look for it by name and report if it is not found."
+        : "Not in this module's source list. Generate will look for it by name and report if it is not found.";
+    }
     return kind === "module"
       ? "Not in the repo list. Fetch will report it as not present; Generate will treat it as a new module."
       : "Not in this module's list. Fetch will report it as not present; Generate will treat it as a new screen.";
@@ -1203,11 +1288,15 @@ export default function App() {
       if (typeof edits["0:feature"] === "string") payload.feature = edits["0:feature"];
       if (typeof edits["0:script"]  === "string") payload.script  = edits["0:script"];
     }
-    send(payload);
+    setPushingBoth(true);
+    if (!send(payload)) setPushingBoth(false);
   };
   // Top-right bulk actions — act on every screen in the merged list,
   // regardless of which one is currently selected.
-  const handleApproveAll = () => send({ action: "approve_all" });
+  const handleApproveAll = () => {
+    setPushingBoth(true);
+    if (!send({ action: "approve_all" })) setPushingBoth(false);
+  };
   const handleRejectAll  = () => { resetRun(); send({ action: "reject" }); };
 
   // Bottom per-screen reject — drops only the currently selected screen
@@ -1553,13 +1642,14 @@ export default function App() {
               catalogLoading={catalogLoading}
               catalogError={catalogError}
               lastRuns={lastRuns}
+              scenarioCounts={scenarioCounts}
               trackingError={trackingError}
               apiBase={API_BASE}
               busy={busy}
               teamsConfigured={teamsConfigured}
               onRunSelected={runFromTracking}
               onOpenInDashboard={openInDashboard}
-              onRefresh={() => { refreshCatalog(); loadTracking(); }}
+              onRefresh={() => { refreshCatalog(); loadTracking(); loadScenarioCounts(true); }}
               onOpenHistory={openHistoryFor}
             />
           )}
@@ -1598,9 +1688,9 @@ export default function App() {
                   <button
                     type="button"
                     className="icon-btn-sm"
-                    title="Refresh the module / screen list from the repo"
-                    onClick={refreshCatalog}
-                    disabled={catalogLoading}
+                    title={fromSource ? "Refresh the module / screen list from the source repo" : "Refresh the module / screen list from the QC repo"}
+                    onClick={() => refreshCatalog(fromSource ? "source" : "qc")}
+                    disabled={activeLoading}
                   >
                     <IconRefresh size={14} />
                   </button>
@@ -1616,6 +1706,8 @@ export default function App() {
                         value={chipDraft}
                         onChange={setChipDraft}
                         options={moduleNames}
+                        loading={activeLoading}
+                        loadingText="Loading modules…"
                         meta={moduleMeta}
                         onPick={(o) => {
                           setModuleChips((prev) => (prev.includes(o) ? prev : [...prev, o]));
@@ -1625,7 +1717,7 @@ export default function App() {
                         onBlur={addModuleChip}
                         disabled={busy}
                       />
-                      {catalogError && <p className="hint hint-tight">Module list unavailable — type the names instead.</p>}
+                      {activeError && <p className="hint hint-tight">Module list unavailable — type the names instead.</p>}
                       {nameHint("module", chipDraft, moduleNames) && (
                         <p className="hint hint-tight">{nameHint("module", chipDraft, moduleNames)}</p>
                       )}
@@ -1656,6 +1748,8 @@ export default function App() {
                         value={moduleName}
                         onChange={setModuleName}
                         options={moduleNames}
+                        loading={activeLoading}
+                        loadingText="Loading modules…"
                         meta={moduleMeta}
                         onPick={(o) => {
                           const m = findCatalogModule(o);
@@ -1664,7 +1758,7 @@ export default function App() {
                         }}
                         disabled={busy}
                       />
-                      {catalogError && <p className="hint hint-tight">Module list unavailable — type the name instead.</p>}
+                      {activeError && <p className="hint hint-tight">Module list unavailable — type the name instead.</p>}
                       {nameHint("module", moduleName, moduleNames) && (
                         <p className="hint hint-tight">{nameHint("module", moduleName, moduleNames)}</p>
                       )}
@@ -1678,6 +1772,8 @@ export default function App() {
                         value={screen}
                         onChange={setScreen}
                         options={screenOptions}
+                        loading={activeLoading && screenOptions.length === 0}
+                        loadingText="Loading screens…"
                         meta={screenMeta}
                         disabled={busy}
                       />
@@ -1771,6 +1867,8 @@ export default function App() {
                         value={overnightDraft}
                         onChange={setOvernightDraft}
                         options={moduleNames}
+                        loading={activeLoading}
+                        loadingText="Loading modules…"
                         meta={moduleMeta}
                         onPick={(o) => addOvernightModule(o)}
                         onKeyDown={(e) => {
@@ -1779,7 +1877,7 @@ export default function App() {
                         onBlur={() => addOvernightModule()}
                         disabled={busy}
                       />
-                      {catalogError && <p className="hint hint-tight">Module list unavailable — type the names instead.</p>}
+                      {activeError && <p className="hint hint-tight">Module list unavailable — type the names instead.</p>}
                       {nameHint("module", overnightDraft, moduleNames) && (
                         <p className="hint hint-tight">{nameHint("module", overnightDraft, moduleNames)}</p>
                       )}
@@ -2078,6 +2176,7 @@ export default function App() {
                     const scriptText  = typeof edits[scriptKey]  === "string" ? edits[scriptKey]  : current.script;
                     const featureEditing = !!editing[featureKey];
                     const scriptEditing  = !!editing[scriptKey];
+                    const scenarioCount  = parseFeature(featureText).scenarios.length;
 
                     // Generated: edit while awaiting approval (then Approve & push, then Run).
                     // Fetched: edit the feature file only, while ready to run; no Approve & push - just Run.
@@ -2101,6 +2200,9 @@ export default function App() {
                           title="Feature file"
                           headExtras={
                             <>
+                              <span className="scenario-count" title="Number of scenarios in this feature file">
+                                Scenarios: <b>{scenarioCount}</b>
+                              </span>
                               {typeof edits[featureKey] === "string" && !featureEditing && (
                                 <span className="edited-badge" title={artifacts.origin === "fetch" ? "Edited copy runs locally; nothing is pushed to GitLab" : undefined}>
                                   {artifacts.origin === "fetch" ? "edited · run only" : "edited"}
@@ -2194,21 +2296,6 @@ export default function App() {
                           <div ref={refineThreadEndRef} />
                         </div>
                       )}
-                      <div className="refine-chips">
-                        <select
-                          className="refine-quick"
-                          value=""
-                          disabled={refining}
-                          onChange={(e) => { if (e.target.value) setRefineText(e.target.value); }}
-                        >
-                          <option value="">Quick options…</option>
-                          <option value="Add more scenarios for every field and flow that is not covered yet.">More scenarios</option>
-                          <option value="Add more test data rows (valid, invalid, boundary, past / present / future dates) to the existing scenarios.">More test data</option>
-                          <option value="Add negative and boundary scenarios for every field.">Negative &amp; boundary scenarios</option>
-                          <option value="Not satisfied with the coverage and the test data. Generate again, much more thoroughly.">Regenerate deeper</option>
-                        </select>
-                        <button disabled={refining || !undoMap[artifacts?.scope === "module" ? selectedScreen : 0]} onClick={handleRefineUndo}>Undo last change</button>
-                      </div>
                       <div className="refine-row">
                         <textarea
                           rows={2}
@@ -2220,14 +2307,17 @@ export default function App() {
                           }}
                           disabled={refining}
                         />
-                        <button
-                          className="primary refine-send"
-                          onClick={() => handleRefine()}
-                          disabled={refining || !refineText.trim()}
-                          title="Send (Ctrl+Enter)"
-                        >
-                          <IconSpark size={14} /> {refining ? "Working..." : "Send"}
-                        </button>
+                        <div className="refine-actions">
+                          <button
+                            className="primary refine-send"
+                            onClick={() => handleRefine()}
+                            disabled={refining || !refineText.trim()}
+                            title="Send (Ctrl+Enter)"
+                          >
+                            <IconSpark size={14} /> {refining ? "Working..." : "Send"}
+                          </button>
+                          <button disabled={refining || !undoMap[artifacts?.scope === "module" ? selectedScreen : 0]} onClick={handleRefineUndo}>Undo last change</button>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -2247,24 +2337,27 @@ export default function App() {
                     </div>
                   )}
 
-                  {(canApprove || canRun || runningNow || reportAvailable) && (
+                  {(canApprove || canRun || runningNow || pushing || reportAvailable) && (
                     <div className="action-bar">
                       <div className="action-group">
-                        {canApprove && (
+                        {pushing && (
+                          <button className="approve" disabled><span className="mini-spin" /> Pushing...</button>
+                        )}
+                        {canApprove && !pushing && (
                           <>
                             <button className="approve" onClick={handleApprove}><IconCheck /> Approve and push</button>
                             <button className="danger solid" onClick={handleRejectScreen}><IconX /> Reject</button>
                           </>
                         )}
-                        {canRun && (
+                        {canRun && !pushing && (
                           <button className="primary" onClick={handleRun}><IconPlay size={14} /> Run</button>
                         )}
-                        {runningNow && (
+                        {runningNow && !pushing && (
                           <button className="primary" disabled><IconPlay size={14} /> Running...</button>
                         )}
                       </div>
                       <div className="action-group end">
-                        {canApprove && artifacts.scope === "module" && (
+                        {canApprove && !pushing && artifacts.scope === "module" && (
                           <>
                             <button className="primary" onClick={handleApproveAll}><IconCheck /> Approve &amp; push all</button>
                             <button className="danger" onClick={handleRejectAll}><IconX /> Reject all</button>

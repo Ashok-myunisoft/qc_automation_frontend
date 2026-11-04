@@ -798,3 +798,18 @@ button.primary:disabled, button.approve:disabled { box-shadow: none; }
 .teams-box { margin-top: 8px; padding-top: 18px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
 .teams-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
 .teams-status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
+/* ── LOADING SPINNER / SCENARIO COUNT / REFINE ACTIONS ─────────── */
+.mini-spin {
+  display: inline-block; width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid currentColor; border-right-color: transparent;
+  animation: mini-spin .7s linear infinite; vertical-align: -2px;
+}
+@keyframes mini-spin { to { transform: rotate(360deg); } }
+.combobox-loading { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.scenario-count {
+  font-size: 12px; color: var(--text-secondary); white-space: nowrap;
+  padding: 2px 9px; border-radius: 999px; background: var(--brand-light);
+}
+.scenario-count b { color: var(--brand-dark); font-weight: 700; }
+.refine-actions { display: flex; flex-direction: column; gap: 8px; flex: none; }
+.refine-actions button { height: 34px; white-space: nowrap; }

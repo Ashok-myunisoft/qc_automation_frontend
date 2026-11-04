@@ -20,6 +20,10 @@ const SORTS = [
 const ts = (iso) => (iso ? new Date(iso).getTime() : null);
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const pickKey = (module, screen) => `${module}\u0001${screen}`;
+// scenario count cell: the number, "…" while the backend is still counting, "—" when there is none
+const scenCell = (n, pending) => (n != null
+  ? n
+  : <span className="track-none" title={pending ? "Counting scenarios…" : "No count available"}>{pending ? "…" : "—"}</span>);
 const within30 = (iso) => { const d = daysSince(iso); return d !== null && d <= 30; };
 
 function LastRun({ iso }) {
@@ -50,7 +54,7 @@ function Check({ checked, indeterminate, onChange, label }) {
 // Every module and screen of the QC repo with when it was last run. The repo list (catalog) is joined with
 // History (lastRuns), so screens that were never run show up too.
 export default function TrackingPage({
-  catalog, catalogLoading, catalogError, lastRuns, trackingError, apiBase, busy, teamsConfigured,
+  catalog, catalogLoading, catalogError, lastRuns, scenarioCounts, trackingError, apiBase, busy, teamsConfigured,
   onRefresh, onOpenHistory, onOpenInDashboard, onRunSelected,
 }) {
   const [query, setQuery] = useState("");
@@ -63,15 +67,20 @@ export default function TrackingPage({
   const [exporting, setExporting] = useState(false);
   const [notify, setNotify] = useState(false);    // send the result to Teams when this run finishes (off by default)
 
+  const counting = scenarioCounts?.status === "loading";
   const rows = useMemo(() => (catalog || []).map((m) => {
     const screens = (m.screens || []).map((name) => ({
       name, last: lastRunOfScreen(lastRuns, m.module, name), runs: runsOfScreen(lastRuns, m.module, name),
+      scen: scenarioCounts?.counts?.[`${m.module}|${name}`], // number, or undefined while not counted yet
     }));
+    const known = screens.filter((s) => s.scen != null);
+    const scen = known.length ? known.reduce((a, s) => a + s.scen, 0) : null;
+    const scenPending = counting && known.length < screens.length;
     // a module's own last run also counts runs we could not tie to one screen
     const times = [lastRunOfModule(lastRuns, m.module), ...screens.map((s) => s.last)].filter(Boolean).map(ts);
     const last = times.length ? new Date(Math.max(...times)).toISOString() : null;
-    return { module: m.module, last, runs: runsOfModule(lastRuns, m.module), covered: screens.filter((s) => within30(s.last)).length, screens };
-  }), [catalog, lastRuns]);
+    return { module: m.module, last, runs: runsOfModule(lastRuns, m.module), covered: screens.filter((s) => within30(s.last)).length, screens, scen, scenPending };
+  }), [catalog, lastRuns, scenarioCounts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const stats = useMemo(() => {
     const all = rows.flatMap((r) => r.screens);
@@ -143,7 +152,7 @@ export default function TrackingPage({
     try {
       const exportRows = shownScreens.map((s) => {
         const f = freshness(s.last);
-        return { module: s.module, screen: s.name, last_run_text: s.last ? exactTime(s.last) : "Never run", days: daysSince(s.last), runs30: s.runs, status: STATUS_TEXT[f] };
+        return { module: s.module, screen: s.name, scenarios: s.scen ?? "", last_run_text: s.last ? exactTime(s.last) : "Never run", days: daysSince(s.last), runs30: s.runs, status: STATUS_TEXT[f] };
       });
       const count = (k) => shownScreens.filter((s) => freshness(s.last) === k).length;
       const covered = shownScreens.filter((s) => within30(s.last)).length;
@@ -152,6 +161,7 @@ export default function TrackingPage({
         showing: FILTERS.find((f) => f.id === filter)?.label,
         search: query.trim(),
         fresh: count("fresh"), stale: count("stale"), never: count("never"),
+        scenarios: shownScreens.reduce((a, s) => a + (s.scen || 0), 0),
         coverage: `${covered} of ${shownScreens.length} (${Math.round((covered * 100) / shownScreens.length)}%)`,
       };
       const res = await fetch(`${apiBase}/api/tracking/export`, {
@@ -298,6 +308,7 @@ export default function TrackingPage({
                 </th>
                 <th>Module / Screen</th>
                 <th>Last run</th>
+                <th className="track-center" title="Number of scenarios in the feature file">Scenarios</th>
                 <th className="track-center" title="How many times it was run in the last 30 days">Runs (30 days)</th>
                 <th title="Screens of the module that were run in the last 30 days">Coverage (30 days)</th>
                 <th className="right"></th>
@@ -322,6 +333,7 @@ export default function TrackingPage({
                         <span className="history-sub track-count"> {r.shown.length === r.screens.length ? plural(r.screens.length, "screen") : `${r.shown.length} of ${r.screens.length} screens`}</span>
                       </td>
                       <td className="nowrap"><LastRun iso={r.last} /></td>
+                      <td className="track-center">{scenCell(r.scen, r.scenPending)}</td>
                       <td className="track-center">{r.runs > 0 ? r.runs : <span className="track-none">—</span>}</td>
                       <td>
                         <div className="track-mini">
@@ -342,6 +354,7 @@ export default function TrackingPage({
                         </td>
                         <td><span className="track-screen-name">{s.name}</span></td>
                         <td className="nowrap"><LastRun iso={s.last} /></td>
+                        <td className="track-center">{scenCell(s.scen, counting && s.scen == null)}</td>
                         <td className="track-center">{s.runs > 0 ? s.runs : <span className="track-none">—</span>}</td>
                         <td></td>
                         <td className="right nowrap">
