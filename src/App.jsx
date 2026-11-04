@@ -560,11 +560,7 @@ export default function App() {
   const [catalog, setCatalog] = useState([]);            // [{module, screens:[...]}]
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState("");
-  // Generate / Auto generate read the SOURCE repo (a screen can be generated before it has any test);
-  // Fetch / Auto run read the QC repo (only screens that already have tests).
-  const [sourceCatalog, setSourceCatalog] = useState([]);   // [{module, screens:[...]}]
-  const [sourceLoading, setSourceLoading] = useState(false);
-  const [sourceError, setSourceError] = useState("");
+  // Fetch, Generate, Auto generate and Auto run all use this same QC-repo list (the big source repo is not read for the dropdowns).
 
   // Refine box (review stage).
   const [refineText, setRefineText] = useState("");
@@ -750,15 +746,9 @@ export default function App() {
         setEnvMenuOpen(false);
         setAlert(null);
       } else if (msg.type === "catalog") {
-        if (msg.kind === "source") {
-          setSourceCatalog(Array.isArray(msg.modules) ? msg.modules : []);
-          setSourceError(msg.error ? String(msg.error) : "");
-          setSourceLoading(false);
-        } else {
-          setCatalog(Array.isArray(msg.modules) ? msg.modules : []);
-          setCatalogError(msg.error ? String(msg.error) : "");
-          setCatalogLoading(false);
-        }
+        setCatalog(Array.isArray(msg.modules) ? msg.modules : []);
+        setCatalogError(msg.error ? String(msg.error) : "");
+        setCatalogLoading(false);
       } else if (msg.type === "refine_done") {
         const sel = refineSelRef.current || 0;
         setRefining(false);
@@ -833,8 +823,6 @@ export default function App() {
         try {
           sock.send(JSON.stringify({ action: "list_catalog" }));
           setCatalogLoading(true);
-          sock.send(JSON.stringify({ action: "list_catalog", kind: "source" }));
-          setSourceLoading(true);
         } catch (e) { /* ignore */ }
         stopHeartbeat();
         heartbeatTimer = setInterval(() => {
@@ -1074,14 +1062,14 @@ export default function App() {
   const lastRunMeta = (iso) => (iso ? { text: `Last run: ${timeAgo(iso)}`, title: exactTime(iso) } : { text: "Never run", title: "No run in History yet" });
   // Fetch / Auto run lists are the QC repo, so those options also show how many scenarios the screen has.
   const moduleScenarios = (name) => {
-    if (fromSource || !scenarioCounts) return null;
+    if (!scenarioCounts) return null;
     const m = findCatalogModule(name);
     if (!m) return null;
     const known = (m.screens || []).map((sc) => scenarioCounts.counts?.[`${m.module}|${sc}`]).filter((n) => n != null);
     return known.length ? known.reduce((a, b) => a + b, 0) : null;
   };
   const screenScenarios = (name) => {
-    if (fromSource || !scenarioCounts) return null;
+    if (!scenarioCounts) return null;
     const m = findCatalogModule(moduleName);
     const n = m ? scenarioCounts.counts?.[`${m.module}|${name}`] : null;
     return n == null ? null : n;
@@ -1089,19 +1077,13 @@ export default function App() {
   const moduleMeta = (name) => withScenarios(lastRunMeta(lastRunOfModule(lastRuns, name)), moduleScenarios(name));
   const screenMeta = (name) => withScenarios(lastRunMeta(lastRunOfScreen(lastRuns, moduleName, name)), screenScenarios(name));
 
-  // kind "qc" (default) or "source"
-  const refreshCatalog = (kind) => {
-    if (kind === "source") {
-      if (send({ action: "list_catalog", refresh: true, kind: "source" })) setSourceLoading(true);
-    } else if (send({ action: "list_catalog", refresh: true })) {
-      setCatalogLoading(true);
-    }
+  const refreshCatalog = () => {
+    if (send({ action: "list_catalog", refresh: true })) setCatalogLoading(true);
   };
-  // Generate and Auto generate pick from the source repo; Fetch and Auto run from the QC repo.
-  const fromSource     = mode === "generate" || mode === "autorun";
-  const activeCatalog = fromSource ? sourceCatalog : catalog;
-  const activeLoading = fromSource ? sourceLoading : catalogLoading;
-  const activeError   = fromSource ? sourceError   : catalogError;
+  // Every mode picks from the same QC-repo list.
+  const activeCatalog = catalog;
+  const activeLoading = catalogLoading;
+  const activeError   = catalogError;
   const moduleNames = useMemo(() => activeCatalog.map((m) => m.module), [activeCatalog]);
   const findCatalogModule = (name) => activeCatalog.find((m) => catKey(m.module) === catKey(name));
   const screenOptions = (() => {
@@ -1114,11 +1096,6 @@ export default function App() {
     if (activeError) return null;
     if (!known || known.length === 0) return null;
     if (known.some((k) => catKey(k) === catKey(value))) return null;
-    if (fromSource) {
-      return kind === "module"
-        ? "Not in the source repo list. Generate will look for it by name and report if it is not found."
-        : "Not in this module's source list. Generate will look for it by name and report if it is not found.";
-    }
     return kind === "module"
       ? "Not in the repo list. Fetch will report it as not present; Generate will treat it as a new module."
       : "Not in this module's list. Fetch will report it as not present; Generate will treat it as a new screen.";
@@ -1688,8 +1665,8 @@ export default function App() {
                   <button
                     type="button"
                     className="icon-btn-sm"
-                    title={fromSource ? "Refresh the module / screen list from the source repo" : "Refresh the module / screen list from the QC repo"}
-                    onClick={() => refreshCatalog(fromSource ? "source" : "qc")}
+                    title="Refresh the module / screen list from the QC repo"
+                    onClick={() => refreshCatalog()}
                     disabled={activeLoading}
                   >
                     <IconRefresh size={14} />
