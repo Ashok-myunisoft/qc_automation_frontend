@@ -1,8 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Sidebar from "./Sidebar";
-import HistoryPage, { apiBaseFromWs } from "./HistoryPage";
+import HistoryPage from "./HistoryPage";
+import Login from "./Login";
+import { WS_URL, API_BASE } from "./config";
+import { clearAuth, getAuth, getToken } from "./auth";
 import TrackingPage from "./TrackingPage";
-import { exactTime, lastRunOfModule, lastRunOfScreen, timeAgo } from "./tracking";
+import DiscussionPage from "./DiscussionPage";
+import IssuesPage from "./IssuesPage";
+import { DiscussionDrawer, useScreenCount } from "./ScreenChat";
+import { exactTime, lastRunOfModule, lastRunOfScreen, timeAgo, trackKey } from "./tracking";
 import {
   IconAlert, IconArrowLeft, IconBolt, IconBox, IconCheck, IconChevronDown, IconChevronRight,
   IconCode, IconDownload, IconEdit, IconFile, IconImage, IconLayers, IconMaximize, IconMinimize,
@@ -10,8 +16,6 @@ import {
   IconTarget, IconX,
 } from "./icons";
 
-const WS_URL = "ws://217.217.249.121:8053/ws/qc";
-const API_BASE = apiBaseFromWs(WS_URL);
 
 // Identifies this browser page to the backend. It stays the same across automatic reconnects,
 // so the backend can hand the same session (and any run still in progress) back to us.
@@ -497,13 +501,29 @@ function EnvDrawer({ envDraft, setEnvDraft, onSave, onClose, teams }) {
   );
 }
 
-export default function App() {
+function QcApp({ user, onLogout }) {
   const [view, setView]       = useState("dashboard"); // "dashboard" | "history" | "tracking"
   const [teamsConfigured, setTeamsConfigured] = useState(null);   // null = not known yet
   const [notifyAutoRun, setNotifyAutoRun] = useState(false);        // "send result to Teams" - per run, off by default
   const [notifyAutoGen, setNotifyAutoGen] = useState(false);
   const [lastRuns, setLastRuns] = useState(null);         // {modules, screens} from /api/tracking
   const [trackingError, setTrackingError] = useState("");
+  const [issuesTarget, setIssuesTarget] = useState(null);   // {module, screen} - set by the "Raise issue" buttons
+  const [discOpen, setDiscOpen] = useState(() => { try { return sessionStorage.getItem("qc.discOpen") !== "0"; } catch { return true; } });
+  const [discBump, setDiscBump] = useState(0);                // bumps when a message is sent/deleted -> refresh the count
+  const [issueCounts, setIssueCounts] = useState(null);       // {open, looking, fixed} for the sidebar badge
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/issues/summary`);
+        if (res.ok && alive) setIssueCounts((await res.json()).counts);
+      } catch { /* the badge is optional */ }
+    };
+    load();
+    const t = setInterval(() => { if (!document.hidden) load(); }, 30000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
   const [historyFilter, setHistoryFilter] = useState(null); // {module, screen?} - set when opened from Tracking
   const [scope, setScope]     = useState("screen");
   const [mode, setMode]       = useState("fetch");
@@ -782,7 +802,6 @@ export default function App() {
       } else if (msg.type === "error") {
         setRefining(false);
         setCatalogLoading(false);
-        setSourceLoading(false);
         log(msg.message, "danger");
         setAlert({ message: msg.message, tone: "danger" });
         if (pushingRef.current) {
@@ -805,7 +824,7 @@ export default function App() {
     const connect = () => {
       if (disposed) return;
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-      const sock = new WebSocket(`${WS_URL}?cid=${encodeURIComponent(CLIENT_ID)}`);
+      const sock = new WebSocket(`${WS_URL}?cid=${encodeURIComponent(CLIENT_ID)}&token=${encodeURIComponent(getToken())}`);
       ws = sock;
       wsRef.current = sock;
 
@@ -858,7 +877,11 @@ export default function App() {
         setConnected(false);
         scheduleReconnect();
       };
-      sock.onclose = lost;
+      sock.onclose = (ev) => {
+        // 4401 = the backend says we are not logged in (token missing / expired)
+        if (ev && ev.code === 4401) { disposed = true; onLogout(); return; }
+        lost();
+      };
       sock.onerror = lost;
     };
 
@@ -1065,6 +1088,12 @@ export default function App() {
     return { ok: true };
   };
   const changeView = (v) => { if (v === "history") setHistoryFilter(null); setView(v); };
+  // Open the Issues page with a new-issue form for a screen.
+  const raiseIssue = (target) => { setIssuesTarget(target); setView("issues"); };
+  const toggleDisc = () => setDiscOpen((open) => {
+    try { sessionStorage.setItem("qc.discOpen", open ? "0" : "1"); } catch { /* ignore */ }
+    return !open;
+  });
   const lastRunMeta = (iso) => (iso ? { text: `Last run: ${timeAgo(iso)}`, title: exactTime(iso) } : { text: "Never run", title: "No run in History yet" });
   // Fetch / Auto run lists are the QC repo, so those options also show how many scenarios the screen has.
   const moduleScenarios = (name) => {
@@ -1555,6 +1584,18 @@ export default function App() {
     : "";
   const crumb = hasArtifacts ? (crumbScreen || screen.trim()) : "";
 
+  // The screen whose discussion is shown on the Dashboard: the selected / fetched / generated one.
+  // Only screens that exist in the module list get a chat, so half-typed names never create stray chats.
+  const discTarget = (() => {
+    const mod = moduleName.trim() || (moduleChips.length === 1 ? moduleChips[0] : "");
+    const scr = scope === "screen" ? screen.trim() : crumbScreen;
+    if (!mod || !scr) return null;
+    const cat = findCatalogModule(mod);
+    const match = cat && (cat.screens || []).find((x) => trackKey(x) === trackKey(scr));
+    return cat && match ? { module: cat.module, screen: match } : null;
+  })();
+  const discCount = useScreenCount(API_BASE, discTarget, discBump);
+
   return (
     <>
       {preview && (
@@ -1594,13 +1635,16 @@ export default function App() {
           envConfirmed={envConfirmed}
           onOpenEnv={handleToggleEnvMenu}
           connected={linkOk}
+          user={user}
+          onLogout={onLogout}
+          openIssues={issueCounts ? issueCounts.open : 0}
         />
 
         <div className="content">
           <header className="page-header">
             <nav className="crumbs" aria-label="Breadcrumb">
               <span className={`crumb${view === "dashboard" && crumb ? "" : " current"}`}>
-                {view === "history" ? "History" : view === "tracking" ? "Tracking" : "Dashboard"}
+                {view === "history" ? "History" : view === "tracking" ? "Tracking" : view === "discussion" ? "Discussions" : view === "issues" ? "Issues" : "Dashboard"}
               </span>
               {view === "dashboard" && crumb && (
                 <>
@@ -1610,6 +1654,12 @@ export default function App() {
               )}
             </nav>
             <div className="header-pills">
+              {view === "dashboard" && discTarget && (
+                <button type="button" className={`disc-header-btn${discOpen ? " on" : ""}`} onClick={toggleDisc}
+                  title="Team discussion about this screen">
+                  Discussion{discCount > 0 && <span className="disc-badge">{discCount}</span>}
+                </button>
+              )}
               {showLinkPill && (
                 <span className={`pill ${linkTone}`}>
                   <span className="pill-dot" />
@@ -1625,6 +1675,23 @@ export default function App() {
             </div>
           </header>
 
+          {view === "discussion" && (
+            <DiscussionPage
+              apiBase={API_BASE}
+              catalog={catalog}
+              catalogLoading={catalogLoading}
+              catalogError={catalogError}
+              onRaiseIssue={raiseIssue}
+            />
+          )}
+          {view === "issues" && (
+            <IssuesPage
+              key={issuesTarget ? `${issuesTarget.module}|${issuesTarget.screen}` : "plain"}
+              apiBase={API_BASE}
+              catalog={catalog}
+              initial={issuesTarget}
+            />
+          )}
           {view === "history" && <HistoryPage apiBase={API_BASE} filter={historyFilter} onClearFilter={() => setHistoryFilter(null)} />}
           {view === "tracking" && (
             <TrackingPage
@@ -1644,7 +1711,17 @@ export default function App() {
             />
           )}
 
-          <div className="dashboard" style={{ display: view === "dashboard" ? undefined : "none" }}>
+          {view === "dashboard" && discTarget && discOpen && (
+            <DiscussionDrawer
+              apiBase={API_BASE}
+              target={discTarget}
+              onClose={toggleDisc}
+              onRaiseIssue={raiseIssue}
+              onActivity={() => setDiscBump((n) => n + 1)}
+            />
+          )}
+
+          <div className={`dashboard${view === "dashboard" && discTarget && discOpen ? " with-disc" : ""}`} style={{ display: view === "dashboard" ? undefined : "none" }}>
 
             <aside className="left-panel">
 
@@ -2484,4 +2561,19 @@ export default function App() {
       </div>
     </>
   );
+}
+
+// Login gate: shows the login screen until the ERP has accepted the user, then the console.
+export default function App() {
+  const [auth, setAuth] = useState(() => getAuth());
+  const logout = useCallback(() => { clearAuth(); setAuth(null); }, []);
+
+  useEffect(() => {
+    // auth.js fires this when the backend answers 401 (for example the 8-hour token ran out)
+    window.addEventListener("qc:logout", logout);
+    return () => window.removeEventListener("qc:logout", logout);
+  }, [logout]);
+
+  if (!auth) return <Login onLoggedIn={setAuth} />;
+  return <QcApp key={auth.user.userCode} user={auth.user} onLogout={logout} />;
 }

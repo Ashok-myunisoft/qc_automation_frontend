@@ -36,6 +36,18 @@ const ChevronIcon = ({ collapsed }) => (
     {collapsed ? <path d="M9 6l6 6-6 6" /> : <path d="M15 6l-6 6 6 6" />}
   </Icon>
 );
+const ChatIcon = () => (
+  <Icon>
+    <path d="M21 12a8 8 0 0 1-11.6 7.1L3 20.5l1.5-4.9A8 8 0 1 1 21 12z" />
+  </Icon>
+);
+const IssueIcon = () => (
+  <Icon>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7.5v5.2" />
+    <path d="M12 16.4v.1" />
+  </Icon>
+);
 const HistoryIcon = () => (
   <Icon>
     <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
@@ -44,7 +56,7 @@ const HistoryIcon = () => (
   </Icon>
 );
 
-export default function Sidebar({ view, setView, envConfirmed, onOpenEnv, connected }) {
+export default function Sidebar({ view, setView, envConfirmed, onOpenEnv, connected, user, onLogout, openIssues }) {
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(STORAGE_KEY) === "1"; } catch { return false; }
   });
@@ -133,7 +145,39 @@ export default function Sidebar({ view, setView, envConfirmed, onOpenEnv, connec
           <span className="sidebar-icon"><TrackIcon /></span>
           <span className="sidebar-item-label">Tracking</span>
         </button>
+        <button
+          type="button"
+          className={`sidebar-item${view === "discussion" ? " active" : ""}`}
+          onClick={() => setView("discussion")}
+          title="Discussions"
+        >
+          <span className="sidebar-icon"><ChatIcon /></span>
+          <span className="sidebar-item-label">Discussions</span>
+        </button>
+        <button
+          type="button"
+          className={`sidebar-item${view === "issues" ? " active" : ""}`}
+          onClick={() => setView("issues")}
+          title="Issues"
+        >
+          <span className="sidebar-icon"><IssueIcon /></span>
+          <span className="sidebar-item-label">Issues</span>
+          {openIssues > 0 && <span className="sidebar-count">{openIssues}</span>}
+        </button>
       </div>
+
+      {user && (
+        <div className="sidebar-user" title={`${user.userName} (${user.userCode})`}>
+          <div className="sidebar-avatar" aria-hidden="true">
+            {(user.userName || user.userCode || "?").trim().charAt(0).toUpperCase()}
+          </div>
+          <div className="sidebar-user-text">
+            <div className="sidebar-user-name">{user.userName}</div>
+            <div className="sidebar-user-code">{user.userCode}</div>
+          </div>
+          <button type="button" className="sidebar-logout" onClick={onLogout}>Log out</button>
+        </div>
+      )}
 
       <div className="sidebar-footer" title={connected ? "Connected" : "Disconnected"}>
         <span className="sidebar-dot" style={{ background: connected ? "#22c55e" : "#ef4444" }} />
