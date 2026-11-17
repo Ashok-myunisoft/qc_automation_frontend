@@ -172,17 +172,17 @@ export default function Sidebar({ view, setView, envConfirmed, onOpenEnv, connec
         </button>
       </div>
 
-      {isAdmin && (
+      {(
         <div className="sidebar-group">
-          <div className="sidebar-group-label">Admin</div>
+          <div className="sidebar-group-label">{isAdmin ? "Admin" : "Help"}</div>
           <button
             type="button"
             className={`sidebar-item${view === "admin" ? " active" : ""}`}
             onClick={() => setView("admin")}
-            title="Admins"
+            title={isAdmin ? "Admins" : "Contact an admin"}
           >
             <span className="sidebar-icon"><AdminIcon /></span>
-            <span className="sidebar-item-label">Admins</span>
+            <span className="sidebar-item-label">{isAdmin ? "Admins" : "Contact admin"}</span>
           </button>
         </div>
       )}

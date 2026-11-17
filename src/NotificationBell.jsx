@@ -85,7 +85,7 @@ export default function NotificationBell({ apiBase, onOpenIssue }) {
       setUnread((u) => Math.max(0, u - 1));
       try { await fetch(`${apiBase}/api/notifications/${n.id}/read`, { method: "POST" }); } catch { /* ignore */ }
     }
-    if (n.issue_id != null && onOpenIssue) onOpenIssue(n);
+    if ((n.issue_id != null || n.kind === "support") && onOpenIssue) onOpenIssue(n);
   };
 
   return (

@@ -8,6 +8,7 @@ import TrackingPage from "./TrackingPage";
 import DiscussionPage from "./DiscussionPage";
 import IssuesPage from "./IssuesPage";
 import AdminPage from "./AdminPage";
+import AnnouncementBanner from "./AnnouncementBanner";
 import NotificationBell from "./NotificationBell";
 import { runBadge, sumStats } from "./runStatus";
 import { DiscussionDrawer, useScreenCount } from "./ScreenChat";
@@ -569,6 +570,7 @@ function QcApp({ user, onLogout }) {
   const [discOpen, setDiscOpen] = useState(() => { try { return sessionStorage.getItem("qc.discOpen") === "1"; } catch { return false; } });
   const [discBump, setDiscBump] = useState(0);                // bumps when a message is sent/deleted -> refresh the count
   const [issueCounts, setIssueCounts] = useState(null);       // {open, looking, fixed} for the sidebar badge
+  const [adminFocus, setAdminFocus] = useState(null);           // {tab, thread} - set when a "Contact admin" bell notification is clicked
   const [isAdmin, setIsAdmin] = useState(false);               // admins get the "Admins" page in the sidebar
   useEffect(() => {
     let alive = true;
@@ -1187,7 +1189,10 @@ function QcApp({ user, onLogout }) {
     return { ok: true };
   };
   const changeView = (v) => { if (v === "history") setHistoryFilter(null); if (v === "issues") setIssueOpenId(null); setView(v); };
-  const openIssueFromBell = (n) => { setIssuesTarget(null); setIssueOpenId(n.issue_id); setView("issues"); };
+  const openIssueFromBell = (n) => {
+    if (n.kind === "support") { setAdminFocus({ tab: "contact", thread: n.ref, nonce: Date.now() }); setView("admin"); return; }
+    setIssuesTarget(null); setIssueOpenId(n.issue_id); setView("issues");
+  };
   // Open the Issues page with a new-issue form for a screen.
   const raiseIssue = (target) => { setIssueOpenId(null); setIssuesTarget(target); setView("issues"); };
   const toggleDisc = () => setDiscOpen((open) => {
@@ -1745,7 +1750,7 @@ function QcApp({ user, onLogout }) {
           <header className="page-header">
             <nav className="crumbs" aria-label="Breadcrumb">
               <span className={`crumb${view === "dashboard" && crumb ? "" : " current"}`}>
-                {view === "history" ? "History" : view === "tracking" ? "Tracking" : view === "discussion" ? "Discussions" : view === "issues" ? "Issues" : view === "admin" ? "Admins" : "Dashboard"}
+                {view === "history" ? "History" : view === "tracking" ? "Tracking" : view === "discussion" ? "Discussions" : view === "issues" ? "Issues" : view === "admin" ? (isAdmin ? "Admins" : "Contact admin") : "Dashboard"}
               </span>
               {view === "dashboard" && crumb && (
                 <>
@@ -1776,6 +1781,7 @@ function QcApp({ user, onLogout }) {
               )}
             </div>
           </header>
+          <AnnouncementBanner apiBase={API_BASE} />
 
           {view === "discussion" && (
             <DiscussionPage
@@ -1795,7 +1801,7 @@ function QcApp({ user, onLogout }) {
               openIssueId={issueOpenId}
             />
           )}
-          {view === "admin" && isAdmin && <AdminPage apiBase={API_BASE} me={user} />}
+          {view === "admin" && <AdminPage apiBase={API_BASE} me={user} isAdmin={isAdmin} focus={adminFocus} onOpenIssue={(id) => openIssueFromBell({ issue_id: id })} />}
           {view === "history" && <HistoryPage apiBase={API_BASE} filter={historyFilter} onClearFilter={() => setHistoryFilter(null)} />}
           {view === "tracking" && (
             <TrackingPage
