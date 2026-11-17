@@ -7,6 +7,8 @@ import { clearAuth, getAuth, getToken } from "./auth";
 import TrackingPage from "./TrackingPage";
 import DiscussionPage from "./DiscussionPage";
 import IssuesPage from "./IssuesPage";
+import NotificationBell from "./NotificationBell";
+import { runBadge, sumStats } from "./runStatus";
 import { DiscussionDrawer, useScreenCount } from "./ScreenChat";
 import { exactTime, lastRunOfModule, lastRunOfScreen, timeAgo, trackKey } from "./tracking";
 import {
@@ -508,8 +510,9 @@ function QcApp({ user, onLogout }) {
   const [notifyAutoGen, setNotifyAutoGen] = useState(false);
   const [lastRuns, setLastRuns] = useState(null);         // {modules, screens} from /api/tracking
   const [trackingError, setTrackingError] = useState("");
+  const [issueOpenId, setIssueOpenId] = useState(null);       // set when a bell notification is clicked -> that issue opens
   const [issuesTarget, setIssuesTarget] = useState(null);   // {module, screen} - set by the "Raise issue" buttons
-  const [discOpen, setDiscOpen] = useState(() => { try { return sessionStorage.getItem("qc.discOpen") !== "0"; } catch { return true; } });
+  const [discOpen, setDiscOpen] = useState(() => { try { return sessionStorage.getItem("qc.discOpen") === "1"; } catch { return false; } });
   const [discBump, setDiscBump] = useState(0);                // bumps when a message is sent/deleted -> refresh the count
   const [issueCounts, setIssueCounts] = useState(null);       // {open, looking, fixed} for the sidebar badge
   useEffect(() => {
@@ -734,6 +737,10 @@ function QcApp({ user, onLogout }) {
           passed: msg.passed,
           count:  null,
         });
+      } else if (msg.type === "run_stats") {
+        // sent right after "result": the numbers that tell Completed (some may have failed) from Run error
+        setResult((prev) => (prev ? { ...prev, stats: msg.stats } : prev));
+        setLastRun((prev) => (prev ? { ...prev, stats: msg.stats } : prev));
       } else if (msg.type === "module_result") {
         setModuleResult(msg.results);
         setReportAvailable(true);
@@ -743,6 +750,7 @@ function QcApp({ user, onLogout }) {
           screen: `${msg.results.length} screen(s)`,
           passed: allPassed,
           count:  msg.results.length,
+          stats:  sumStats(msg.results.map((r) => r.stats)),
         });
       } else if (msg.type === "report") {
         const byteChars = atob(msg.content_base64);
@@ -1087,9 +1095,10 @@ function QcApp({ user, onLogout }) {
     setView("dashboard");
     return { ok: true };
   };
-  const changeView = (v) => { if (v === "history") setHistoryFilter(null); setView(v); };
+  const changeView = (v) => { if (v === "history") setHistoryFilter(null); if (v === "issues") setIssueOpenId(null); setView(v); };
+  const openIssueFromBell = (n) => { setIssuesTarget(null); setIssueOpenId(n.issue_id); setView("issues"); };
   // Open the Issues page with a new-issue form for a screen.
-  const raiseIssue = (target) => { setIssuesTarget(target); setView("issues"); };
+  const raiseIssue = (target) => { setIssueOpenId(null); setIssuesTarget(target); setView("issues"); };
   const toggleDisc = () => setDiscOpen((open) => {
     try { sessionStorage.setItem("qc.discOpen", open ? "0" : "1"); } catch { /* ignore */ }
     return !open;
@@ -1654,6 +1663,7 @@ function QcApp({ user, onLogout }) {
               )}
             </nav>
             <div className="header-pills">
+              <NotificationBell apiBase={API_BASE} onOpenIssue={openIssueFromBell} />
               {view === "dashboard" && discTarget && (
                 <button type="button" className={`disc-header-btn${discOpen ? " on" : ""}`} onClick={toggleDisc}
                   title="Team discussion about this screen">
@@ -1686,10 +1696,11 @@ function QcApp({ user, onLogout }) {
           )}
           {view === "issues" && (
             <IssuesPage
-              key={issuesTarget ? `${issuesTarget.module}|${issuesTarget.screen}` : "plain"}
+              key={`${issuesTarget ? `${issuesTarget.module}|${issuesTarget.screen}` : "plain"}|${issueOpenId || ""}`}
               apiBase={API_BASE}
               catalog={catalog}
               initial={issuesTarget}
+              openIssueId={issueOpenId}
             />
           )}
           {view === "history" && <HistoryPage apiBase={API_BASE} filter={historyFilter} onClearFilter={() => setHistoryFilter(null)} />}
@@ -1711,17 +1722,19 @@ function QcApp({ user, onLogout }) {
             />
           )}
 
-          {view === "dashboard" && discTarget && discOpen && (
+          {view === "dashboard" && discTarget && (
             <DiscussionDrawer
               apiBase={API_BASE}
               target={discTarget}
-              onClose={toggleDisc}
+              open={discOpen}
+              count={discCount}
+              onToggle={toggleDisc}
               onRaiseIssue={raiseIssue}
               onActivity={() => setDiscBump((n) => n + 1)}
             />
           )}
 
-          <div className={`dashboard${view === "dashboard" && discTarget && discOpen ? " with-disc" : ""}`} style={{ display: view === "dashboard" ? undefined : "none" }}>
+          <div className="dashboard" style={{ display: view === "dashboard" ? undefined : "none" }}>
 
             <aside className="left-panel">
 
@@ -2000,10 +2013,20 @@ function QcApp({ user, onLogout }) {
                 <section className="card last-run">
                   <div className="last-run-label">Last run</div>
                   <div className="last-run-screen">{lastRun.module} / {lastRun.screen}</div>
-                  <Badge tone={lastRun.passed ? "success" : "danger"}>
-                    {lastRun.passed ? <IconCheck size={12} strokeWidth={2.6} /> : <IconX size={12} strokeWidth={2.6} />}
-                    {lastRun.passed ? "Passed" : "Failed"}
-                  </Badge>
+                  {(() => {
+                    const rb = runBadge(lastRun.stats);
+                    return rb ? (
+                      <>
+                        <Badge tone={rb.tone}>
+                          {rb.error ? <IconX size={12} strokeWidth={2.6} /> : <IconCheck size={12} strokeWidth={2.6} />}
+                          {rb.label}
+                        </Badge>
+                        <div className="last-run-screen">{rb.detail}</div>
+                      </>
+                    ) : (
+                      <Badge tone="muted">Finished</Badge>
+                    );
+                  })()}
                 </section>
               )}
 
@@ -2411,10 +2434,17 @@ function QcApp({ user, onLogout }) {
                       {moduleResult.map((r) => (
                         <div key={r.name} className="module-summary-row">
                           <span>{r.name}</span>
-                          <Badge tone={r.passed ? "success" : "danger"}>
-                            {r.passed ? <IconCheck size={12} strokeWidth={2.6} /> : <IconX size={12} strokeWidth={2.6} />}
-                            {r.passed ? "Passed" : "Failed"}
-                          </Badge>
+                          {(() => {
+                            const rb = runBadge(r.stats);
+                            return rb ? (
+                              <Badge tone={rb.tone} title={rb.detail}>
+                                {rb.error ? <IconX size={12} strokeWidth={2.6} /> : <IconCheck size={12} strokeWidth={2.6} />}
+                                {rb.label} · {rb.detail}
+                              </Badge>
+                            ) : (
+                              <Badge tone={r.passed ? "success" : "muted"}>{r.passed ? "All passed" : "Finished"}</Badge>
+                            );
+                          })()}
                         </div>
                       ))}
                     </div>
@@ -2469,8 +2499,8 @@ function QcApp({ user, onLogout }) {
                   </div>
                   <div className="ov-stats">
                     <span className="ov-stat"><b>{overnightSummary.total ?? 0}</b> total</span>
-                    <span className="ov-stat success"><b>{overnightSummary.passed ?? 0}</b> passed</span>
-                    <span className="ov-stat danger"><b>{overnightSummary.failed ?? 0}</b> failed</span>
+                    <span className="ov-stat success"><b>{overnightSummary.completed ?? overnightSummary.passed ?? 0}</b> completed</span>
+                    <span className="ov-stat danger"><b>{overnightSummary.run_errors ?? overnightSummary.failed ?? 0}</b> could not run</span>
                     <span className="ov-stat muted"><b>{overnightSummary.skipped ?? 0}</b> skipped</span>
                     <span className="ov-stat"><b>{formatDuration(overnightSummary.elapsed_seconds)}</b> total time</span>
                   </div>
@@ -2503,11 +2533,15 @@ function QcApp({ user, onLogout }) {
                             <td>{it.module}</td>
                             <td>{it.screen}</td>
                             <td>
-                              <Badge tone={it.status === "passed" ? "success" : it.status === "skipped" ? "muted" : "danger"}>
-                                {it.status}
-                              </Badge>
+                              {it.status === "skipped" ? (
+                                <Badge tone="muted">skipped</Badge>
+                              ) : runBadge(it.stats) ? (
+                                <Badge tone={runBadge(it.stats).tone}>{runBadge(it.stats).label}</Badge>
+                              ) : (
+                                <Badge tone="danger">Run error</Badge>
+                              )}
                             </td>
-                            <td className="ov-reason">{it.reason || (it.exit_code != null ? `exit ${it.exit_code}` : "")}</td>
+                            <td className="ov-reason">{it.reason || (runBadge(it.stats) ? runBadge(it.stats).detail : (it.exit_code != null ? `exit ${it.exit_code}` : ""))}</td>
                             <td className="ov-links">
                               {it.run_id ? (
                                 <>
@@ -2531,8 +2565,10 @@ function QcApp({ user, onLogout }) {
                     <span className="log-title">{hasArtifacts || busy ? "Live execution log" : "Run log"}</span>
                     <span className="log-spacer" />
                     {result && (
-                      <Badge tone={result.passed ? "success" : "danger"}>
-                        {result.passed ? "Passed" : "Failed"} · exit {result.exit_code}
+                      <Badge tone={runBadge(result.stats)?.tone || (result.passed ? "success" : "muted")}>
+                        {runBadge(result.stats)
+                          ? `${runBadge(result.stats).label} · ${runBadge(result.stats).detail}`
+                          : (result.passed ? "All passed" : "Finished")}
                       </Badge>
                     )}
                     {busy && <span className="streaming"><span className="pulse" />Streaming…</span>}

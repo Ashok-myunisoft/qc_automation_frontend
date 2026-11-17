@@ -74,7 +74,7 @@ function IssueForm({ catalog, initial, showSeverity, severities, submitLabel, bu
   );
 }
 
-export default function IssuesPage({ apiBase, catalog, initial }) {
+export default function IssuesPage({ apiBase, catalog, initial, openIssueId }) {
   // ---- list filters ----
   const [status, setStatus] = useState("");
   const [mine, setMine] = useState(false);
@@ -91,7 +91,7 @@ export default function IssuesPage({ apiBase, catalog, initial }) {
   const [listError, setListError] = useState("");
 
   // ---- right side ----
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(openIssueId || null);
   const [detail, setDetail] = useState(null);     // { issue, comments }
   const [detailError, setDetailError] = useState("");
   const [composing, setComposing] = useState(initial ? { module: initial.module || "", screen: initial.screen || "" } : null);

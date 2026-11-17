@@ -34,12 +34,26 @@ function renderBody(text) {
   );
 }
 
+// Turns a failed server answer into a sentence a person can act on.
+// A bare "Not Found" means the URL does not exist on the server (an old backend is running),
+// which is NOT the same as "this screen has no data", so it gets its own wording.
 export async function errorText(res) {
+  let detail = "";
   try {
     const data = await res.json();
-    if (typeof data.detail === "string") return data.detail;
+    if (typeof data.detail === "string") detail = data.detail;
   } catch { /* not JSON */ }
-  return `Something went wrong (${res.status}).`;
+  if (res.status === 404 && (!detail || detail === "Not Found")) {
+    return "The server does not have this feature yet. Ask the admin to update and restart the backend.";
+  }
+  if (res.status >= 500) return "The server had a problem. Please try again in a moment.";
+  return detail || `Something went wrong (${res.status}).`;
+}
+
+// fetch() itself failing (server down, no network) throws a TypeError such as "Failed to fetch".
+export function networkText(e) {
+  const msg = e && e.message ? e.message : "";
+  return /failed to fetch|networkerror|load failed/i.test(msg) ? "Cannot reach the server. Check your connection - retrying automatically." : (msg || "Something went wrong.");
 }
 
 // Number of messages of one screen (for the badge on the "Discussion" button). `bump` forces a refresh.
@@ -100,7 +114,7 @@ export default function ScreenChat({ apiBase, module, screen, onActivity }) {
       if (data.max_length) setMaxLen(data.max_length);
       setLoadError("");
     } catch (e) {
-      if (!quiet && id === reqRef.current) setLoadError(e.message || "Could not load the discussion.");
+      if (!quiet && id === reqRef.current) setLoadError(networkText(e) || "Could not load the discussion.");
     } finally {
       if (id === reqRef.current) setLoading(false);
     }
@@ -309,7 +323,12 @@ export default function ScreenChat({ apiBase, module, screen, onActivity }) {
     <div className="disc-chatbody">
       <div className="disc-list" ref={listRef} onScroll={onScroll}>
         {loading && !messages.length && <div className="disc-note">Loading…</div>}
-        {loadError && <div className="disc-note disc-note-error">{loadError}</div>}
+        {loadError && (
+          <div className="disc-note disc-note-error">
+            {loadError}
+            <div><button type="button" className="disc-small" onClick={() => { setLoading(true); loadMessages(false); }}>Try again</button></div>
+          </div>
+        )}
         {!loading && !loadError && !messages.length && (
           <div className="disc-empty small">
             No messages yet. Start the conversation about <b>{screen}</b>.
@@ -348,12 +367,88 @@ export default function ScreenChat({ apiBase, module, screen, onActivity }) {
   );
 }
 
-// The side panel shown on the Dashboard: the chat of the screen that is currently selected / fetched / generated.
-export function DiscussionDrawer({ apiBase, target, onClose, onRaiseIssue, onActivity }) {
+// ---- Activity: the overall history of one screen (who generated it, who ran it, where, when) ----
+const ACTIVITY_POLL_MS = 15000;
+
+function ActivityTab({ apiBase, module, screen }) {
+  const [events, setEvents] = useState(null);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/screen-history?module=${encodeURIComponent(module)}&screen=${encodeURIComponent(screen)}`);
+      if (!res.ok) throw new Error(await errorText(res));
+      setEvents((await res.json()).events || []);
+      setError("");
+    } catch (e) {
+      setError(networkText(e));
+    }
+  }, [apiBase, module, screen]);
+
+  useEffect(() => {
+    setEvents(null);
+    load();
+    const t = setInterval(() => { if (!document.hidden) load(); }, ACTIVITY_POLL_MS);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const when = (iso) => {
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? "" : d.toLocaleString(undefined, { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  };
+
   return (
-    <aside className="disc-drawer" aria-label="Screen discussion">
-      <header className="disc-drawer-head">
-        <div className="disc-drawer-title">
+    <div className="disc-list act-list">
+      {error && <div className="disc-note disc-note-error">{error}</div>}
+      {!error && events === null && <div className="disc-note">Loading…</div>}
+      {events && !events.length && !error && (
+        <div className="disc-empty small">Nothing recorded for <b>{screen}</b> yet. Generating or running it will show up here.</div>
+      )}
+      {(events || []).map((e, i) => (
+        <div key={`${e.type}-${e.run_id || ""}-${i}`} className="act-item">
+          <span className={`act-dot ${e.type === "run" ? (e.status === "completed" ? "ok" : "bad") : "gen"}`} />
+          <div className="act-main">
+            <div className="act-title">
+              <b>{e.user_name}</b>{e.user_code ? <span className="act-code"> {e.user_code}</span> : null}
+            </div>
+            <div className="act-text">{e.title}</div>
+            {e.type === "run" && (
+              <div className="act-text">
+                <span className={`act-result ${e.status === "completed" ? "ok" : "bad"}`}>{e.status === "completed" ? "Completed" : "Run error"}</span>
+                {e.status === "completed" ? <> · {e.passed_count} passed · {e.failed_count} failed</> : null}
+                {e.detail ? <div>{e.detail}</div> : null}
+              </div>
+            )}
+            <div className="act-time">{when(e.at)}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// The small chat window in the bottom-right corner of the Dashboard (like a website chat bubble).
+// Closed: a round button with the message count. Open: a compact window with two tabs: Chat and Activity.
+export function DiscussionDrawer({ apiBase, target, open, count, onToggle, onRaiseIssue, onActivity }) {
+  const [tab, setTab] = useState("chat");
+  useEffect(() => { setTab("chat"); }, [target.module, target.screen]);
+
+  if (!open) {
+    return (
+      <button type="button" className="chatfab" onClick={onToggle} aria-label="Open the discussion of this screen"
+        title={`Discussion · ${target.screen}`}>
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.6 8.6 0 0 1-3.6-.8L3 21l1.9-5.4A8.4 8.4 0 1 1 21 11.5z" />
+        </svg>
+        {count > 0 && <span className="chatfab-badge">{count > 99 ? "99+" : count}</span>}
+      </button>
+    );
+  }
+
+  return (
+    <aside className="chatwin" aria-label="Screen discussion">
+      <header className="chatwin-head">
+        <div className="chatwin-title">
           <div className="disc-chat-module">{target.module}</div>
           <div className="disc-chat-screen">{target.screen}</div>
         </div>
@@ -363,10 +458,18 @@ export function DiscussionDrawer({ apiBase, target, onClose, onRaiseIssue, onAct
               Raise issue
             </button>
           )}
-          <button type="button" className="disc-clear disc-close" onClick={onClose} aria-label="Close discussion"><IconX size={16} /></button>
+          <button type="button" className="disc-clear disc-close" onClick={onToggle} aria-label="Minimise the discussion" title="Minimise">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+          </button>
         </div>
       </header>
-      <ScreenChat apiBase={apiBase} module={target.module} screen={target.screen} onActivity={onActivity} />
+      <div className="chatwin-tabs" role="tablist">
+        <button type="button" role="tab" aria-selected={tab === "chat"} className={`chatwin-tab${tab === "chat" ? " on" : ""}`} onClick={() => setTab("chat")}>Chat</button>
+        <button type="button" role="tab" aria-selected={tab === "activity"} className={`chatwin-tab${tab === "activity" ? " on" : ""}`} onClick={() => setTab("activity")}>Activity</button>
+      </div>
+      {tab === "chat"
+        ? <ScreenChat apiBase={apiBase} module={target.module} screen={target.screen} onActivity={onActivity} />
+        : <ActivityTab apiBase={apiBase} module={target.module} screen={target.screen} />}
     </aside>
   );
 }

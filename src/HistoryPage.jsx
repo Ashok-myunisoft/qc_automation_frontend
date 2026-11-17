@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { trackKey } from "./tracking";
 import { IconCheck, IconClock, IconDownload, IconImage, IconRefresh, IconSheet, IconStop, IconTrash, IconX } from "./icons";
 
@@ -7,6 +7,12 @@ import { IconCheck, IconClock, IconDownload, IconImage, IconRefresh, IconSheet, 
 // whatever you set in WS_URL in App.jsx is followed automatically.
 export function apiBaseFromWs(wsUrl) {
   return wsUrl.replace(/^ws/, "http").replace(/\/ws\/qc\/?$/, "");
+}
+
+// "https://erp-test.example.com/app" -> "erp-test.example.com"
+function hostOf(url) {
+  if (!url) return "";
+  try { return new URL(url).host; } catch { return String(url); }
 }
 
 const SOURCE_LABEL = { fetch: "Fetch → Run", generate: "Generate → Run", auto_run: "Auto-run", overnight_run: "Overnight run" };
@@ -41,6 +47,7 @@ export default function HistoryPage({ apiBase, filter, onClearFilter }) {
   const [confirmDelete, setConfirmDelete] = useState(null); // row awaiting delete confirmation
   const [deleting, setDeleting] = useState(false);
   const [cancelling, setCancelling] = useState(null); // job id currently being cancelled
+  const [userFilter, setUserFilter] = useState(""); // "" = everybody
 
   // Jobs are the backend's own record of what's queued/running right now (it survives
   // this tab closing). We fetch them alongside history, so reopening the tab mid-run
@@ -140,8 +147,11 @@ export default function HistoryPage({ apiBase, filter, onClearFilter }) {
   };
   const rowScreens = (r) => [...(r.screens || []).map((x) => x.slug), ...(r.screen && !String(r.screen).includes(",") ? [r.screen] : [])];
   const jobScreens = (j) => String(j.screen || "").split(",").map((x) => x.trim());
-  const shownRows = rows ? rows.filter((r) => matchesFilter(r.module, rowScreens(r))) : rows;
-  const shownJobs = jobs.filter((j) => matchesFilter(j.module, jobScreens(j)));
+  const people = useMemo(() => Array.from(new Set((rows || []).map((r) => r.run_by_name).filter(Boolean))).sort(), [rows]);
+  const shownRows = rows
+    ? rows.filter((r) => matchesFilter(r.module, rowScreens(r)) && (!userFilter || r.run_by_name === userFilter))
+    : rows;
+  const shownJobs = userFilter ? [] : jobs.filter((j) => matchesFilter(j.module, jobScreens(j)));
 
   return (
     <div className="history-page">
@@ -181,9 +191,17 @@ export default function HistoryPage({ apiBase, filter, onClearFilter }) {
 
       <div className="section-header">
         <span className="section-title">Run history</span>
-        <button className="secondary" onClick={load} disabled={loading}>
-          <IconRefresh /> {loading ? "Refreshing…" : "Refresh"}
-        </button>
+        <div className="history-tools">
+          {people.length > 0 && (
+            <select className="history-user" value={userFilter} onChange={(e) => setUserFilter(e.target.value)} aria-label="Show runs of">
+              <option value="">Everybody</option>
+              {people.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          )}
+          <button className="secondary" onClick={load} disabled={loading}>
+            <IconRefresh /> {loading ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
       </div>
 
       {error && <div className="alert danger" style={{ marginBottom: 12 }}>{error}</div>}
@@ -210,6 +228,8 @@ export default function HistoryPage({ apiBase, filter, onClearFilter }) {
                 <th>Date &amp; time</th>
                 <th>Module / Screen</th>
                 <th>Source</th>
+                <th>Run by</th>
+                <th>Environment</th>
                 <th>Result</th>
                 <th className="right">Report &amp; Screenshots</th>
                 <th className="right col-delete" aria-label="Delete"></th>
@@ -224,9 +244,11 @@ export default function HistoryPage({ apiBase, filter, onClearFilter }) {
                     <div className="history-sub" title={j.screen}>{j.screen || ""}</div>
                   </td>
                   <td><span className="badge muted">{SOURCE_LABEL[j.source] || j.source}</span></td>
+                  <td className="history-sub">—</td>
+                  <td className="history-sub">—</td>
                   <td>
                     {j.status === "failed" ? (
-                      <span className="badge danger"><IconX size={12} strokeWidth={2.6} /> Failed</span>
+                      <span className="badge danger"><IconX size={12} strokeWidth={2.6} /> Run error</span>
                     ) : (
                       <span className="badge accent"><span className="pulse" style={{ background: "#60a5fa" }} /> {j.status === "queued" ? "Queued" : "Running"}</span>
                     )}
@@ -253,11 +275,27 @@ export default function HistoryPage({ apiBase, filter, onClearFilter }) {
                   </td>
                   <td><span className="badge muted">{SOURCE_LABEL[r.source] || r.source}</span></td>
                   <td>
-                    <span className={`badge ${r.status === "passed" ? "success" : r.status === "failed" ? "danger" : "warning"}`}>
-                      {r.status === "passed" ? <IconCheck size={12} strokeWidth={2.6} /> : r.status === "failed" ? <IconX size={12} strokeWidth={2.6} /> : null}
-                      {r.status === "passed" ? "Passed" : r.status === "failed" ? "Failed" : "Partial"}
-                    </span>
-                    <div className="history-sub">{r.passed_count}/{r.total} screen(s) passed</div>
+                    {r.run_by_name
+                      ? (<><div className="history-main">{r.run_by_name}</div><div className="history-sub">{r.run_by_code}</div></>)
+                      : <span className="history-sub" title="Run before user tracking was added">Unknown</span>}
+                  </td>
+                  <td>
+                    {r.env_base_url || r.env_db
+                      ? (<><div className="history-main" title={r.env_base_url}>{hostOf(r.env_base_url) || "—"}</div><div className="history-sub">{r.env_db ? `DB ${r.env_db}` : ""}{r.env_user ? ` · ${r.env_user}` : ""}</div></>)
+                      : <span className="history-sub">Not recorded</span>}
+                  </td>
+                  <td>
+                    {r.outcome === "error" ? (
+                      <>
+                        <span className="badge danger"><IconX size={12} strokeWidth={2.6} /> Run error</span>
+                        <div className="history-sub">No test case could be executed</div>
+                      </>
+                    ) : (
+                      <>
+                        <span className={`badge ${r.scen_failed ? "accent" : "success"}`}><IconCheck size={12} strokeWidth={2.6} /> Completed</span>
+                        <div className="history-sub">{r.scen_passed} passed · {r.scen_failed} failed · {r.total} screen(s)</div>
+                      </>
+                    )}
                   </td>
                   <td className="right nowrap">
                     <button className="secondary" disabled={!r.has_report} onClick={() => downloadReport(r)}><IconSheet /> Report</button>{" "}
