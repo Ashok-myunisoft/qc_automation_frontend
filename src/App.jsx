@@ -7,6 +7,7 @@ import { clearAuth, getAuth, getToken } from "./auth";
 import TrackingPage from "./TrackingPage";
 import DiscussionPage from "./DiscussionPage";
 import IssuesPage from "./IssuesPage";
+import AdminPage from "./AdminPage";
 import NotificationBell from "./NotificationBell";
 import { runBadge, sumStats } from "./runStatus";
 import { DiscussionDrawer, useScreenCount } from "./ScreenChat";
@@ -568,12 +569,17 @@ function QcApp({ user, onLogout }) {
   const [discOpen, setDiscOpen] = useState(() => { try { return sessionStorage.getItem("qc.discOpen") === "1"; } catch { return false; } });
   const [discBump, setDiscBump] = useState(0);                // bumps when a message is sent/deleted -> refresh the count
   const [issueCounts, setIssueCounts] = useState(null);       // {open, looking, fixed} for the sidebar badge
+  const [isAdmin, setIsAdmin] = useState(false);               // admins get the "Admins" page in the sidebar
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
         const res = await fetch(`${API_BASE}/api/issues/summary`);
-        if (res.ok && alive) setIssueCounts((await res.json()).counts);
+        if (res.ok && alive) {
+          const data = await res.json();
+          setIssueCounts(data.counts);
+          setIsAdmin(!!(data.me && data.me.isAdmin));
+        }
       } catch { /* the badge is optional */ }
     };
     load();
@@ -1732,13 +1738,14 @@ function QcApp({ user, onLogout }) {
           user={user}
           onLogout={onLogout}
           openIssues={issueCounts ? issueCounts.open : 0}
+          isAdmin={isAdmin}
         />
 
         <div className="content">
           <header className="page-header">
             <nav className="crumbs" aria-label="Breadcrumb">
               <span className={`crumb${view === "dashboard" && crumb ? "" : " current"}`}>
-                {view === "history" ? "History" : view === "tracking" ? "Tracking" : view === "discussion" ? "Discussions" : view === "issues" ? "Issues" : "Dashboard"}
+                {view === "history" ? "History" : view === "tracking" ? "Tracking" : view === "discussion" ? "Discussions" : view === "issues" ? "Issues" : view === "admin" ? "Admins" : "Dashboard"}
               </span>
               {view === "dashboard" && crumb && (
                 <>
@@ -1788,6 +1795,7 @@ function QcApp({ user, onLogout }) {
               openIssueId={issueOpenId}
             />
           )}
+          {view === "admin" && isAdmin && <AdminPage apiBase={API_BASE} me={user} />}
           {view === "history" && <HistoryPage apiBase={API_BASE} filter={historyFilter} onClearFilter={() => setHistoryFilter(null)} />}
           {view === "tracking" && (
             <TrackingPage

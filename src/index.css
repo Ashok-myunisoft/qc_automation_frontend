@@ -1156,3 +1156,22 @@ button.primary:disabled, button.approve:disabled { box-shadow: none; }
 .track-regen-list li { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .track-regen-list li:last-child { border-bottom: none; }
 .track-regen-list label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+
+/* ── Admin screen ── */
+.adm-page { padding: 24px 28px 32px; max-width: 820px; display: flex; flex-direction: column; gap: 14px; }
+.adm-intro { margin: -6px 0 0; }
+.adm-add { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-1); }
+.adm-add .iss-label { max-width: 240px; }
+.adm-add-btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; }
+.adm-list { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-1); overflow: hidden; }
+.adm-pad { padding: 16px; }
+.adm-row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.adm-row:last-child { border-bottom: none; }
+.adm-avatar { flex: none; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; background: var(--brand-light); color: var(--brand-dark); }
+.adm-who { flex: 1; min-width: 0; }
+.adm-name { font-size: 14px; font-weight: 600; color: var(--text-primary); overflow-wrap: anywhere; }
+.adm-code { font-size: 12px; color: var(--text-muted); }
+.adm-meta { flex: none; font-size: 12.5px; }
+.adm-remove { flex: none; width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.adm-remove-gap { flex: none; width: 30px; }
+.adm-foot { margin: 0; }

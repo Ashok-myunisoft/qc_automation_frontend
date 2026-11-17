@@ -48,6 +48,12 @@ const IssueIcon = () => (
     <path d="M12 16.4v.1" />
   </Icon>
 );
+const AdminIcon = () => (
+  <Icon>
+    <path d="M12 3 4.5 6v5.5c0 4.4 3 8.2 7.5 9.5 4.5-1.3 7.5-5.1 7.5-9.5V6z" />
+    <path d="m9 12 2.2 2.2L15.5 10" />
+  </Icon>
+);
 const HistoryIcon = () => (
   <Icon>
     <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
@@ -56,7 +62,7 @@ const HistoryIcon = () => (
   </Icon>
 );
 
-export default function Sidebar({ view, setView, envConfirmed, onOpenEnv, connected, user, onLogout, openIssues }) {
+export default function Sidebar({ view, setView, envConfirmed, onOpenEnv, connected, user, onLogout, openIssues, isAdmin }) {
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(STORAGE_KEY) === "1"; } catch { return false; }
   });
@@ -165,6 +171,21 @@ export default function Sidebar({ view, setView, envConfirmed, onOpenEnv, connec
           {openIssues > 0 && <span className="sidebar-count">{openIssues}</span>}
         </button>
       </div>
+
+      {isAdmin && (
+        <div className="sidebar-group">
+          <div className="sidebar-group-label">Admin</div>
+          <button
+            type="button"
+            className={`sidebar-item${view === "admin" ? " active" : ""}`}
+            onClick={() => setView("admin")}
+            title="Admins"
+          >
+            <span className="sidebar-icon"><AdminIcon /></span>
+            <span className="sidebar-item-label">Admins</span>
+          </button>
+        </div>
+      )}
 
       {user && (
         <div className="sidebar-user" title={`${user.userName} (${user.userCode})`}>
