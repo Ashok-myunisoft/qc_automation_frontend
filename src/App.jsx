@@ -131,9 +131,31 @@ function matchScenarioLines(prefix, lines) {
   return ids;
 }
 
+// "@smoke @regression" above a scenario -> ["@smoke", "@regression"]
+const scenarioTags = (sc) => (sc.tag ? sc.tag.split(/\s+/).filter((t) => t.startsWith("@")) : []);
+const isOutline = (sc) => /^Scenario Outline:/.test(sc.title);
+
 function FeatureFileView({ text, onOpenScenariosChange }) {
   const { header, scenarios } = useMemo(() => parseFeature(text), [text]);
   const [openSet, setOpenSet] = useState(() => new Set());
+  // Scenario filter: find a scenario in a long feature file without scrolling. Display only - nothing is changed or run differently.
+  const [query, setQuery] = useState("");
+  const [kind, setKind] = useState("all");          // all | scenario | outline
+  const [tagFilter, setTagFilter] = useState("");
+  const allTags = useMemo(() => Array.from(new Set(scenarios.flatMap(scenarioTags))).sort(), [scenarios]);
+  const q = query.trim().toLowerCase();
+  const filtering = !!q || kind !== "all" || !!tagFilter;
+  const visibleIdx = useMemo(() => scenarios.map((_, i) => i).filter((i) => {
+    const sc = scenarios[i];
+    if (kind === "outline" && !isOutline(sc)) return false;
+    if (kind === "scenario" && isOutline(sc)) return false;
+    if (tagFilter && !scenarioTags(sc).includes(tagFilter)) return false;
+    if (q && !`${sc.title}\n${sc.body}\n${sc.tag || ""}`.toLowerCase().includes(q)) return false;
+    return true;
+  }), [scenarios, q, kind, tagFilter]);
+  const clearFilters = () => { setQuery(""); setKind("all"); setTagFilter(""); };
+  const expandShown = () => setOpenSet((prev) => new Set([...prev, ...visibleIdx]));
+  const collapseShown = () => setOpenSet((prev) => { const next = new Set(prev); visibleIdx.forEach((i) => next.delete(i)); return next; });
 
   const toggle = (idx) => {
     setOpenSet((prev) => {
@@ -160,7 +182,38 @@ function FeatureFileView({ text, onOpenScenariosChange }) {
   return (
     <div className="feature-view">
       {header.trim() && <pre className="feature-header">{header.trim()}</pre>}
-      {scenarios.map((sc, idx) => {
+      {scenarios.length > 3 && (
+        <div className="scn-filter">
+          <div className="scn-filter-row">
+            <input type="search" className="scn-search" value={query} onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search scenarios by title, step or value…" aria-label="Search scenarios" />
+            <select className="scn-kind" value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Scenario type">
+              <option value="all">All types</option>
+              <option value="scenario">Scenario</option>
+              <option value="outline">Scenario Outline</option>
+            </select>
+          </div>
+          {allTags.length > 0 && (
+            <div className="scn-tags">
+              {allTags.map((t) => (
+                <button key={t} type="button" className={`scn-chip${tagFilter === t ? " on" : ""}`}
+                  onClick={() => setTagFilter(tagFilter === t ? "" : t)}>{t}</button>
+              ))}
+            </div>
+          )}
+          <div className="scn-filter-row scn-meta">
+            <span className="scn-found">{filtering ? <>Showing <b>{visibleIdx.length}</b> of {scenarios.length}</> : <>{scenarios.length} scenarios</>}</span>
+            <span className="scn-actions">
+              <button type="button" className="scn-link" onClick={expandShown} disabled={!visibleIdx.length}>Expand all</button>
+              <button type="button" className="scn-link" onClick={collapseShown} disabled={!visibleIdx.length}>Collapse all</button>
+              {filtering && <button type="button" className="scn-link" onClick={clearFilters}>Clear filters</button>}
+            </span>
+          </div>
+        </div>
+      )}
+      {filtering && visibleIdx.length === 0 && <div className="scn-empty">No scenario matches this search.</div>}
+      {visibleIdx.map((idx) => {
+        const sc = scenarios[idx];
         const isOpen = openSet.has(idx);
         return (
           <div key={idx} className={`scenario-row${isOpen ? " open" : ""}`}>
@@ -1060,6 +1113,23 @@ function QcApp({ user, onLogout }) {
     const t = setTimeout(() => loadScenarioCounts(), 3000);
     return () => clearTimeout(t);
   }, [scenarioCounts]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Which screens' source code changed since their tests were generated ({items: {"module|screen": {state, ...}}, status})
+  const [sourceStatus, setSourceStatus] = useState(null);
+  const loadSourceStatus = async (refresh = false) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/source-status${refresh ? "?refresh=true" : ""}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setSourceStatus(await res.json());
+    } catch (e) {
+      setSourceStatus((cur) => (cur ? { ...cur, status: "ready" } : null));
+    }
+  };
+  useEffect(() => { if (view === "tracking") loadSourceStatus(); }, [view]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (sourceStatus?.status !== "loading") return undefined;
+    const t = setTimeout(() => loadSourceStatus(), 3000);
+    return () => clearTimeout(t);
+  }, [sourceStatus]); // eslint-disable-line react-hooks/exhaustive-deps
   const scenarioWord = (n) => `${n} scenario${n === 1 ? "" : "s"}`;
   const withScenarios = (meta, n) => (n == null ? meta : { ...meta, text: `${meta.text} · ${scenarioWord(n)}` });
   const openHistoryFor = (filter) => { setHistoryFilter(filter); setView("history"); };
@@ -1078,6 +1148,21 @@ function QcApp({ user, onLogout }) {
     setMode("overnight");
     setPhase("auto_running");
     log(`starting run of ${screens.length} selected screen(s) in ${modules.length} module(s) — one after another, nothing is generated or changed...`, "secondary");
+    setView("dashboard");
+    return { ok: true };
+  };
+  // Tracking page -> "Regenerate changed": generate + push again, only for the chosen screens whose source code changed.
+  // It is the Auto generate job (nothing is run) limited to an exact list of screens.
+  const regenerateFromTracking = (screens, notify) => {
+    if (busy) return { ok: false, reason: "A run is already in progress. Wait for it to finish first." };
+    resetRun();
+    const items = screens.map((s) => ({ module: s.module, screen: s.screen }));
+    if (!send({ action: "auto_run", scope: "screens", items, notify: !!notify })) {
+      return { ok: false, reason: "Not connected to the backend right now." };
+    }
+    setMode("autorun");
+    setPhase("auto_running");
+    log(`regenerating ${items.length} screen(s) whose source code changed — generate and push will follow on their own (nothing is run)...`, "secondary");
     setView("dashboard");
     return { ok: true };
   };
@@ -1711,13 +1796,15 @@ function QcApp({ user, onLogout }) {
               catalogError={catalogError}
               lastRuns={lastRuns}
               scenarioCounts={scenarioCounts}
+              sourceStatus={sourceStatus}
               trackingError={trackingError}
               apiBase={API_BASE}
               busy={busy}
               teamsConfigured={teamsConfigured}
               onRunSelected={runFromTracking}
+              onRegenerate={regenerateFromTracking}
               onOpenInDashboard={openInDashboard}
-              onRefresh={() => { refreshCatalog(); loadTracking(); loadScenarioCounts(true); }}
+              onRefresh={() => { refreshCatalog(); loadTracking(); loadScenarioCounts(true); loadSourceStatus(true); }}
               onOpenHistory={openHistoryFor}
             />
           )}
@@ -2135,6 +2222,29 @@ function QcApp({ user, onLogout }) {
                         <p className="card-sub">Compare what exists, then choose how to proceed</p>
                       </div>
                     </div>
+
+                    {(() => {
+                      const sc = preview.source_check;
+                      if (!sc) return null;
+                      const when = sc.recorded_at ? exactTime(sc.recorded_at) : "";
+                      const who = sc.recorded_by ? ` by ${sc.recorded_by}` : "";
+                      if (sc.state === "unchanged") {
+                        return (
+                          <div className="src-note ok">
+                            <b>Source code unchanged</b> since these tests were generated ({when}{who}). Regenerating will most likely give the same tests — do you still want to replace them?
+                          </div>
+                        );
+                      }
+                      if (sc.state === "changed") {
+                        return (
+                          <div className="src-note warn">
+                            <b>Source code changed</b> in {sc.changed_count} of {sc.checked} file(s) since these tests were generated ({when}{who}), so regenerating is worthwhile.
+                            {(sc.changed_files || []).length > 0 && <div className="src-files">{sc.changed_files.join(", ")}</div>}
+                          </div>
+                        );
+                      }
+                      return <div className="src-note muted">Could not tell whether the source changed: {sc.reason || "unknown"}.</div>;
+                    })()}
 
                     <div className="side-by-side">
                       <SxsPanel icon={<IconFile size={15} />} title="Existing feature file">

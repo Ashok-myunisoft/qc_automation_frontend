@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { IconChevronDown, IconChevronRight, IconClock, IconDownload, IconPlay, IconRefresh, IconSearch, IconX } from "./icons";
 import {
   STATUS_TEXT, daysSince, exactTime, freshness, lastRunOfModule, lastRunOfScreen,
-  runsOfModule, runsOfScreen, timeAgo, trackKey, weekLabel,
+  runsOfModule, runsOfScreen, srcKey, timeAgo, trackKey, weekLabel,
 } from "./tracking";
 
 const FILTERS = [
@@ -10,6 +10,7 @@ const FILTERS = [
   { id: "fresh", label: "Last 7 days" },
   { id: "stale", label: "Not run in 30+ days" },
   { id: "never", label: "Never run" },
+  { id: "srcchanged", label: "Source changed" },
 ];
 const SORTS = [
   { id: "name",   label: "Name (A–Z)" },
@@ -36,6 +37,19 @@ function LastRun({ iso }) {
   );
 }
 
+// Has the source code of this screen changed since its tests were generated? (from /api/source-status)
+function SourceCell({ src }) {
+  if (!src || src.state === "unknown") {
+    return <span className="track-none" title="Not tracked yet - tracking starts the next time this screen is generated">—</span>;
+  }
+  if (src.state === "checking") return <span className="track-none" title="Checking the source repository…">…</span>;
+  const when = src.recorded_at ? `Tests generated ${exactTime(src.recorded_at)}${src.recorded_by ? ` by ${src.recorded_by}` : ""}` : "";
+  if (src.state === "changed") {
+    return <span className="badge warning" title={`${when}\nChanged: ${(src.changed_files || []).join(", ")}`}>Changed · {src.changed_count} file{src.changed_count === 1 ? "" : "s"}</span>;
+  }
+  return <span className="badge success" title={when}>Up to date</span>;
+}
+
 function Check({ checked, indeterminate, onChange, label }) {
   return (
     <input
@@ -54,8 +68,8 @@ function Check({ checked, indeterminate, onChange, label }) {
 // Every module and screen of the QC repo with when it was last run. The repo list (catalog) is joined with
 // History (lastRuns), so screens that were never run show up too.
 export default function TrackingPage({
-  catalog, catalogLoading, catalogError, lastRuns, scenarioCounts, trackingError, apiBase, busy, teamsConfigured,
-  onRefresh, onOpenHistory, onOpenInDashboard, onRunSelected,
+  catalog, catalogLoading, catalogError, lastRuns, scenarioCounts, sourceStatus, trackingError, apiBase, busy, teamsConfigured,
+  onRefresh, onOpenHistory, onOpenInDashboard, onRunSelected, onRegenerate,
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -63,6 +77,8 @@ export default function TrackingPage({
   const [open, setOpen] = useState({});          // module -> expanded
   const [selected, setSelected] = useState({});  // pickKey -> {module, screen}
   const [confirm, setConfirm] = useState(false);
+  const [regenOpen, setRegenOpen] = useState(false);   // the "Regenerate changed" dialog
+  const [regenOff, setRegenOff] = useState({});        // pickKey -> true when the person un-ticked that screen
   const [notice, setNotice] = useState("");
   const [exporting, setExporting] = useState(false);
   const [notify, setNotify] = useState(false);    // send the result to Teams when this run finishes (off by default)
@@ -72,6 +88,7 @@ export default function TrackingPage({
     const screens = (m.screens || []).map((name) => ({
       name, last: lastRunOfScreen(lastRuns, m.module, name), runs: runsOfScreen(lastRuns, m.module, name),
       scen: scenarioCounts?.counts?.[`${m.module}|${name}`], // number, or undefined while not counted yet
+      src: sourceStatus?.items?.[srcKey(m.module, name)],     // {state: changed|unchanged|checking|unknown, ...} or undefined
     }));
     const known = screens.filter((s) => s.scen != null);
     const scen = known.length ? known.reduce((a, s) => a + s.scen, 0) : null;
@@ -79,8 +96,22 @@ export default function TrackingPage({
     // a module's own last run also counts runs we could not tie to one screen
     const times = [lastRunOfModule(lastRuns, m.module), ...screens.map((s) => s.last)].filter(Boolean).map(ts);
     const last = times.length ? new Date(Math.max(...times)).toISOString() : null;
-    return { module: m.module, last, runs: runsOfModule(lastRuns, m.module), covered: screens.filter((s) => within30(s.last)).length, screens, scen, scenPending };
-  }), [catalog, lastRuns, scenarioCounts]); // eslint-disable-line react-hooks/exhaustive-deps
+    const srcChanged = screens.filter((s) => s.src?.state === "changed").length;
+    const srcTracked = screens.filter((s) => s.src && s.src.state !== "unknown").length;
+    return { module: m.module, last, runs: runsOfModule(lastRuns, m.module), covered: screens.filter((s) => within30(s.last)).length, screens, scen, scenPending, srcChanged, srcTracked };
+  }), [catalog, lastRuns, scenarioCounts, sourceStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Every screen (not only the ones shown) whose source code changed since its tests were generated.
+  const changedList = useMemo(
+    () => rows.flatMap((r) => r.screens.filter((s) => s.src?.state === "changed").map((s) => ({ module: r.module, screen: s.name, src: s.src }))),
+    [rows],
+  );
+  const regenList = changedList.filter((c) => !regenOff[pickKey(c.module, c.screen)]);
+  const startRegenerate = () => {
+    const res = onRegenerate ? onRegenerate(regenList, notify) : { ok: false, reason: "Not available." };
+    if (res && res.ok) { setRegenOpen(false); setRegenOff({}); setNotify(false); }
+    else { setRegenOpen(false); setNotice((res && res.reason) || "Could not start the regeneration."); }
+  };
 
   const stats = useMemo(() => {
     const all = rows.flatMap((r) => r.screens);
@@ -98,14 +129,14 @@ export default function TrackingPage({
     if (tb === null) return sort === "oldest" ? 1 : -1;
     return sort === "oldest" ? ta - tb : tb - ta;
   };
-  const matchesFilter = (last) => filter === "all" || freshness(last) === filter;
+  const matchesFilter = (s) => filter === "all" || (filter === "srcchanged" ? s.src?.state === "changed" : freshness(s.last) === filter);
 
   const visible = useMemo(() => {
     const out = [];
     for (const r of rows) {
       const moduleHit = q && trackKey(r.module).includes(q);
       const shown = r.screens
-        .filter((s) => (!q || moduleHit || trackKey(s.name).includes(q)) && matchesFilter(s.last))
+        .filter((s) => (!q || moduleHit || trackKey(s.name).includes(q)) && matchesFilter(s))
         .sort((a, b) => cmp(a.last, b.last));
       if (shown.length === 0) continue;
       out.push({ ...r, shown });
@@ -201,6 +232,12 @@ export default function TrackingPage({
           <div className="track-subtitle">See when every module and screen was last run, then pick the ones that need attention and run them.</div>
         </div>
         <div className="track-head-actions">
+          {changedList.length > 0 && (
+            <button className="primary" onClick={() => { setRegenOff({}); setRegenOpen(true); }} disabled={busy}
+              title="Generate the tests again for the screens whose source code changed">
+              <IconRefresh size={14} /> Regenerate changed ({changedList.length})
+            </button>
+          )}
           <button className="secondary" onClick={exportExcel} disabled={!shownScreens.length || exporting}
             title="Download the screens shown below as an Excel file">
             <IconDownload size={14} /> {exporting ? "Preparing…" : "Export to Excel"}
@@ -294,7 +331,15 @@ export default function TrackingPage({
         </div>
       )}
       {rows.length > 0 && visible.length === 0 && (
-        <div className="empty-state"><p>Nothing matches this search / filter.</p></div>
+        <div className="empty-state">
+          <p>
+            {filter === "srcchanged"
+              ? (rows.some((r) => r.srcTracked > 0)
+                ? "No screen has changed source code. Every tracked screen is up to date."
+                : "No screens are tracked for source changes yet. A screen is tracked from the next time its tests are generated and pushed.")
+              : "Nothing matches this search / filter."}
+          </p>
+        </div>
       )}
 
       {visible.length > 0 && (
@@ -309,6 +354,7 @@ export default function TrackingPage({
                 <th>Module / Screen</th>
                 <th>Last run</th>
                 <th className="track-center" title="Number of scenarios in the feature file">Scenarios</th>
+                <th className="track-center" title="Has the source code changed since the tests were generated? Tracked from the next generation of each screen.">Source</th>
                 <th className="track-center" title="How many times it was run in the last 30 days">Runs (30 days)</th>
                 <th title="Screens of the module that were run in the last 30 days">Coverage (30 days)</th>
                 <th className="right"></th>
@@ -334,6 +380,11 @@ export default function TrackingPage({
                       </td>
                       <td className="nowrap"><LastRun iso={r.last} /></td>
                       <td className="track-center">{scenCell(r.scen, r.scenPending)}</td>
+                      <td className="track-center">
+                        {r.srcChanged > 0
+                          ? <span className="badge warning" title="Screens whose source code changed since their tests were generated">{r.srcChanged} changed</span>
+                          : r.srcTracked > 0 ? <span className="track-none" title="Tracked screens are up to date">{r.srcTracked} up to date</span> : <span className="track-none">—</span>}
+                      </td>
                       <td className="track-center">{r.runs > 0 ? r.runs : <span className="track-none">—</span>}</td>
                       <td>
                         <div className="track-mini">
@@ -355,6 +406,7 @@ export default function TrackingPage({
                         <td><span className="track-screen-name">{s.name}</span></td>
                         <td className="nowrap"><LastRun iso={s.last} /></td>
                         <td className="track-center">{scenCell(s.scen, counting && s.scen == null)}</td>
+                        <td className="track-center"><SourceCell src={s.src} /></td>
                         <td className="track-center">{s.runs > 0 ? s.runs : <span className="track-none">—</span>}</td>
                         <td></td>
                         <td className="right nowrap">
@@ -385,6 +437,48 @@ export default function TrackingPage({
               title={busy ? "A run is already in progress" : "Run the selected screens one after another"}>
               <IconPlay size={14} /> Run selected
             </button>
+          </div>
+        </div>
+      )}
+
+      {regenOpen && (
+        <div className="preview-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setRegenOpen(false); }}>
+          <div className="confirm-dialog" role="dialog" aria-modal="true">
+            <div className="confirm-title">Regenerate {plural(regenList.length, "screen")} whose source code changed?</div>
+            <div className="confirm-text">
+              <ul className="track-regen-list">
+                {changedList.map((c) => {
+                  const k = pickKey(c.module, c.screen);
+                  return (
+                    <li key={k}>
+                      <label>
+                        <input type="checkbox" checked={!regenOff[k]} onChange={() => setRegenOff((o) => ({ ...o, [k]: !o[k] }))} />
+                        <span><b>{c.module}</b> / {c.screen}</span>
+                      </label>
+                      <span className="history-sub">
+                        {c.src.changed_count} file{c.src.changed_count === 1 ? "" : "s"} changed · tests generated {exactTime(c.src.recorded_at)}{c.src.recorded_by ? ` by ${c.src.recorded_by}` : ""}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+              <b>This replaces the existing tests of these screens</b>, including any edits someone made by hand after they were generated.
+              Untick the screens you want to keep as they are. The screens are generated and pushed one after another and nothing is run;
+              you can follow the progress on the Dashboard.
+              <div className={`notify-row${teamsConfigured === false ? " unavailable" : ""}`} style={{ marginTop: 12 }}>
+                <label className="notify-switch">
+                  <input type="checkbox" checked={notify && teamsConfigured !== false} disabled={teamsConfigured === false}
+                    onChange={(e) => setNotify(e.target.checked)} />
+                  <span className="notify-track"><span className="notify-thumb" /></span>
+                  <span className="notify-label">Send result to Teams when finished</span>
+                </label>
+                {teamsConfigured === false && <span className="notify-hint">Teams link not set on the server (TEAMS_WEBHOOK_URL).</span>}
+              </div>
+            </div>
+            <div className="confirm-actions">
+              <button className="secondary" onClick={() => setRegenOpen(false)}>Cancel</button>
+              <button className="primary" onClick={startRegenerate} disabled={!regenList.length}><IconRefresh size={14} /> Regenerate {regenList.length}</button>
+            </div>
           </div>
         </div>
       )}

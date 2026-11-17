@@ -68,3 +68,5 @@ export const STATUS_TEXT = {
   stale: "Not run in 30+ days",
   never: "Never run",
 };
+// Key of a screen in /api/source-status (same rule as the backend: a leading order number such as "2_" is ignored).
+export const srcKey = (module, screen) => `${trackKey(module)}|${trackKey(screen).replace(/^\d+\s+/, "")}`;

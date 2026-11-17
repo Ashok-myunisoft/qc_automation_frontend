@@ -1130,3 +1130,29 @@ button.primary:disabled, button.approve:disabled { box-shadow: none; }
 /* ── History: user filter ── */
 .history-tools { display: flex; align-items: center; gap: 8px; }
 .history-user { height: 34px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-1); font-size: 13px; color: var(--text-primary); }
+/* ── Scenario filter (above the scenario list of a feature file) ── */
+.scn-filter { position: sticky; top: 0; z-index: 2; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--surface-1); border-bottom: 1px solid var(--border); }
+.scn-filter-row { display: flex; align-items: center; gap: 8px; }
+.scn-search { flex: 1; min-width: 0; height: 32px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-1); font-size: 13px; color: var(--text-primary); }
+.scn-kind { height: 32px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-1); font-size: 13px; color: var(--text-primary); }
+.scn-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.scn-chip { height: 24px; padding: 0 10px; border-radius: 12px; border: 1px solid var(--border-strong); background: var(--surface-2); font-size: 12px; color: var(--text-secondary); cursor: pointer; box-shadow: none; }
+.scn-chip.on { background: var(--brand-light); border-color: var(--brand); color: var(--brand-dark); font-weight: 600; }
+.scn-meta { justify-content: space-between; font-size: 12.5px; color: var(--text-secondary); }
+.scn-actions { display: inline-flex; gap: 12px; }
+.scn-link { background: none; border: none; padding: 0; height: auto; font-size: 12.5px; color: var(--brand); cursor: pointer; box-shadow: none; }
+.scn-link:disabled { color: var(--text-muted); cursor: default; }
+.scn-empty { padding: 22px 16px; text-align: center; font-size: 13px; color: var(--text-muted); }
+
+/* ── Source-code change note (Replace / Append popup) ── */
+.src-note { margin: 0 0 12px; padding: 10px 12px; border-radius: var(--radius); font-size: 13px; line-height: 1.45; }
+.src-note.ok { background: var(--bg-success); color: var(--text-success); }
+.src-note.warn { background: var(--bg-warning); color: var(--text-warning); }
+.src-note.muted { background: var(--surface-2); color: var(--text-secondary); }
+.src-files { margin-top: 4px; font-family: var(--mono, ui-monospace, monospace); font-size: 12px; word-break: break-all; }
+
+/* ── Tracking: Regenerate changed dialog ── */
+.track-regen-list { list-style: none; margin: 0 0 12px; padding: 0; max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.track-regen-list li { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.track-regen-list li:last-child { border-bottom: none; }
+.track-regen-list label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
