@@ -2,11 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import { IconPlus, IconTrash } from "./icons";
 import { errorText, networkText } from "./ScreenChat";
 import { ChatBox, SupportPopup } from "./SupportChat";
+import { formatWhen } from "./AnnouncementBanner";
 import { timeAgo } from "./tracking";
+import "./console.css";
 
-// One page for everybody, different content by role. Backend: /api/admin/..., /api/support/..., /api/me/work
-//   normal user : Contact admin (list of admins + chat popup), My work
-//   admin       : Live runs, Inbox, Announcements, My work, Admins (who is an admin)
+// One page for everybody, different content by role. Backend: /api/admin/..., /api/support/..., /api/announcements, /api/me/work
+//   normal user : Contact admin (announcements + list of admins + chat popup), My work
+//   admin       : Activity, Inbox, Announcements, My work, Admins (who is an admin)
 const SOURCE_LABEL = {
   run: "Run", fetch: "Fetch → Run", generate: "Generate → Run", auto_run: "Auto generate",
   overnight_run: "Overnight run", append: "Append", refine: "Refine",
@@ -26,16 +28,20 @@ function Avatar({ name }) {
   return <div className="adm-avatar" aria-hidden="true">{(name || "?").trim().charAt(0).toUpperCase()}</div>;
 }
 
-/* ───────────── normal user: who the admins are + chat ───────────── */
+/* ───────────── normal user: announcements + who the admins are + chat ───────────── */
 function ContactTab({ apiBase, onContact }) {
   const [admins, setAdmins] = useState(null);
+  const [anns, setAnns] = useState(null);
   const [error, setError] = useState("");
   useEffect(() => {
     let alive = true;
     api(apiBase, "GET", "/api/support/admins")
       .then((d) => { if (alive) setAdmins(d.admins || []); })
       .catch((e) => { if (alive) setError(networkText(e)); });
-    return () => { alive = false; };
+    const loadAnns = () => api(apiBase, "GET", "/api/announcements").then((d) => { if (alive) setAnns(d.announcements || []); }).catch(() => { if (alive) setAnns((a) => a || []); });
+    loadAnns();
+    const t = setInterval(() => { if (!document.hidden) loadAnns(); }, 60000);
+    return () => { alive = false; clearInterval(t); };
   }, [apiBase]);
 
   return (
@@ -46,6 +52,23 @@ function ContactTab({ apiBase, onContact }) {
       </p>
       <div><button type="button" className="primary" onClick={onContact}>Write to the admins</button></div>
       {error && <div className="iss-error" role="alert">{error}</div>}
+
+      <h2 className="adm-h2">Announcements</h2>
+      <div className="adm-list">
+        {anns === null && <div className="iss-muted adm-pad">Loading…</div>}
+        {anns && anns.length === 0 && <div className="iss-muted adm-pad">No announcements right now.</div>}
+        {(anns || []).map((a) => (
+          <div className="adm-row" key={a.id}>
+            <span className={`iss-chip ${a.level === "warning" ? "looking" : "fixed"}`}>{a.level === "warning" ? "Warning" : "Info"}</span>
+            <div className="adm-who">
+              <div className="adm-name act-wrap">{a.message}</div>
+              <div className="adm-code">{a.by ? `${a.by} · ` : ""}{a.endsAt ? `until ${formatWhen(a.endsAt)}` : "until further notice"}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <h2 className="adm-h2">Admins you can contact</h2>
       <div className="adm-list">
         {admins === null && !error && <div className="iss-muted adm-pad">Loading…</div>}
         {admins && admins.length === 0 && <div className="iss-muted adm-pad">No admins are listed yet.</div>}
@@ -64,8 +87,10 @@ function ContactTab({ apiBase, onContact }) {
   );
 }
 
-/* ───────────── admin: live runs + leftover processes ───────────── */
-function LiveTab({ apiBase }) {
+/* ───────────── admin: who is doing what ───────────── */
+const minutesText = (m) => (m == null ? "" : m < 1 ? "less than a minute" : m === 1 ? "1 min" : `${m} min`);
+
+function ActivityTab({ apiBase }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
@@ -86,68 +111,81 @@ function LiveTab({ apiBase }) {
     try { await fn(); await load(); } catch (e) { setError(networkText(e)); } finally { setBusy(false); }
   };
   const cancel = (j) => {
-    if (!window.confirm(`Stop this run?\n\n${SOURCE_LABEL[j.source] || j.source} · ${j.module || "-"}${j.screen ? " / " + j.screen : ""}\nStarted by ${j.userName}`)) return;
+    if (!window.confirm(`Stop this run?\n\n${j.userName} · ${SOURCE_LABEL[j.source] || j.source} · ${j.module || "-"}${j.screen ? " / " + j.screen : ""}`)) return;
     act(async () => { await api(apiBase, "POST", `/api/admin/live/${j.key}/cancel`); setNote("The run was stopped."); });
   };
   const cleanup = () => {
-    if (!window.confirm("Stop every leftover Cypress / browser process on the server?\n\nOnly possible while no run is active.")) return;
+    if (!window.confirm("Close the leftover test browsers on the server?")) return;
     act(async () => {
       const r = await api(apiBase, "POST", "/api/admin/cleanup");
-      setNote(r.killed ? `Stopped ${r.killed} leftover process${r.killed === 1 ? "" : "es"}.` : "Nothing to clean up.");
+      setNote(r.cleaned ? "The leftover test browsers were closed." : "Nothing to clean up.");
     });
   };
 
   const jobs = data?.jobs || [];
-  const p = data?.processes;
-  const leftoverLikely = p?.available && jobs.length === 0 && p.cypress > 0;
+  const people = data?.people || [];
+  const server = data?.server;
+  const status = {
+    clean: { tone: "ok", text: "Server is clean" },
+    leftover: { tone: "warn", text: "Leftover test browsers found" },
+    busy: { tone: "idle", text: "A run is in progress" },
+  }[server?.state];
 
   return (
     <>
-      <p className="iss-sub adm-intro">What is running on the server right now. The page refreshes every few seconds.</p>
+      <p className="iss-sub adm-intro">Who is doing what in the console right now. The page refreshes by itself.</p>
       {error && <div className="iss-error" role="alert">{error}</div>}
       {note && <div className="adm-ok" role="status">{note}</div>}
 
-      <div className="live-cards">
-        <div className="live-card"><b>{jobs.filter((j) => j.status === "running").length}</b><span>running now</span></div>
-        <div className="live-card"><b>{jobs.filter((j) => j.status !== "running").length}</b><span>waiting</span></div>
-        <div className="live-card"><b>{data ? data.maxConcurrent : "–"}</b><span>run(s) at a time (limit)</span></div>
-        {p?.available && <div className={`live-card${leftoverLikely ? " warn" : ""}`}><b>{p.cypress}</b><span>Cypress / browser processes</span></div>}
-        {p?.available && <div className="live-card"><b>{p.total}</b><span>processes in total{p.zombies ? ` (${p.zombies} zombie)` : ""}</span></div>}
-      </div>
+      {status && (
+        <div className={`act-status ${status.tone}`}>
+          <span className="act-dot" aria-hidden="true" />
+          <b>{status.text}</b>
+          {server.canCleanup && (
+            <button type="button" className="primary act-clean" onClick={cleanup} disabled={busy}>Clean up</button>
+          )}
+        </div>
+      )}
 
+      <h2 className="adm-h2">Right now</h2>
       <div className="adm-list">
         {data === null && !error && <div className="iss-muted adm-pad">Loading…</div>}
-        {data && jobs.length === 0 && <div className="iss-muted adm-pad">Nothing is running or waiting.</div>}
-        {jobs.map((j) => (
-          <div className="adm-row live-row" key={j.key}>
-            <span className={`iss-chip ${j.status === "running" ? "looking" : "open"}`}>{j.status === "running" ? "Running" : "Waiting"}</span>
-            <div className="adm-who">
-              <div className="adm-name">{SOURCE_LABEL[j.source] || j.source} · {j.module || "-"}{j.screen ? ` / ${j.screen}` : ""}</div>
-              <div className="adm-code">Started by {j.userName}{j.userCode && j.userCode !== j.userName ? ` (${j.userCode})` : ""} · {j.progress || "starting"}</div>
-              {j.lastLog && <div className="adm-code live-log">{j.lastLog}</div>}
+        {data && jobs.length === 0 && <div className="iss-muted adm-pad">Nobody is running anything right now.</div>}
+        {jobs.map((j) => {
+          const where = `${j.module || "-"}${j.screen ? ` / ${j.screen}` : ""}`;
+          const running = j.status === "running";
+          return (
+            <div className="adm-row live-row" key={j.key}>
+              <Avatar name={j.userName} />
+              <div className="adm-who">
+                <div className="adm-name act-wrap">{j.userName} {running ? "is running" : "is waiting to run"} {where}</div>
+                <div className="adm-code">
+                  {SOURCE_LABEL[j.source] || j.source}{j.minutes != null ? ` · ${minutesText(j.minutes)}` : ""}{running && j.progress ? ` · ${j.progress}` : ""}
+                </div>
+              </div>
+              <span className={`iss-chip ${running ? "looking" : "open"}`}>{running ? "Running" : "Waiting"}</span>
+              <button type="button" className="secondary" disabled={busy} onClick={() => cancel(j)}>{running ? "Cancel run" : "Remove"}</button>
             </div>
-            <button type="button" className="secondary" disabled={busy} onClick={() => cancel(j)}>Cancel run</button>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
-      <div className={`live-clean${leftoverLikely ? " warn" : ""}`}>
-        <div>
-          <b>Leftover processes</b>
-          <div className="iss-muted">
-            {!p || !p.available
-              ? "The process count is not available on this server."
-              : leftoverLikely
-                ? `${p.cypress} Cypress / browser processes are running but no run is active - they are probably left over from a stopped or failed run.`
-                : jobs.length
-                  ? "A run is active, so cleanup is switched off."
-                  : "No leftover Cypress processes found."}
-            {p?.zombies > 0 && " Zombie processes are removed by the server itself; they cannot be stopped here."}
+      <h2 className="adm-h2">Active in the last 24 hours</h2>
+      <div className="adm-list">
+        {data && people.length === 0 && <div className="iss-muted adm-pad">Nobody has logged in or run anything in the last 24 hours.</div>}
+        {people.map((p) => (
+          <div className="adm-row" key={p.userCode}>
+            <Avatar name={p.userName} />
+            <div className="adm-who">
+              <div className="adm-name">{p.userName}</div>
+              {p.userName !== p.userCode && <div className="adm-code">{p.userCode}</div>}
+            </div>
+            <div className="adm-meta iss-muted">
+              {p.lastLogin ? `Last login ${timeAgo(p.lastLogin)}` : "No login today"}
+              {p.runs > 0 ? ` · ${p.runs} run${p.runs === 1 ? "" : "s"}` : ""}
+            </div>
           </div>
-        </div>
-        <button type="button" className={leftoverLikely ? "primary" : "secondary"} onClick={cleanup} disabled={busy || jobs.length > 0 || !p?.available}>
-          Clean up leftover processes
-        </button>
+        ))}
       </div>
     </>
   );
@@ -210,14 +248,82 @@ function InboxTab({ apiBase, focusThread, onUnread }) {
 }
 
 /* ───────────── admin: announcements ───────────── */
-const DURATIONS = [{ label: "1 hour", hours: 1 }, { label: "1 day", hours: 24 }, { label: "1 week", hours: 168 }, { label: "Until I remove it", hours: null }];
+const pad2 = (n) => String(n).padStart(2, "0");
+const toLocalInput = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+const toIso = (local) => (local ? new Date(local).toISOString() : null);
+const plusHours = (h) => toLocalInput(new Date(Date.now() + h * 3600 * 1000));
+const atHour = (daysAhead, hour) => { const d = new Date(); d.setDate(d.getDate() + daysAhead); d.setHours(hour, 0, 0, 0); return d; };
+
+// Quick ways to choose the end time. Each gives a value for the date and time field ("" = no end).
+function quickEnds() {
+  const list = [{ label: "1 hour", value: plusHours(1) }];
+  const today6 = atHour(0, 18);
+  if (today6.getTime() > Date.now() + 5 * 60000) list.push({ label: "Today 6 pm", value: toLocalInput(today6) });
+  list.push({ label: "Tomorrow 6 pm", value: toLocalInput(atHour(1, 18)) });
+  list.push({ label: "1 week", value: plusHours(168) });
+  list.push({ label: "No end", value: "" });
+  return list;
+}
+
+function QuickEnds({ onPick }) {
+  return (
+    <div className="ann-quick" role="group" aria-label="Quick end times">
+      {quickEnds().map((q) => <button type="button" key={q.label} className="secondary" onClick={() => onPick(q.value)}>{q.label}</button>)}
+    </div>
+  );
+}
+
+const STATE_CHIP = { scheduled: ["Scheduled", "open"], active: ["Live", "fixed"], ended: ["Ended", ""] };
+
+function AnnRow({ a, busy, onChange, onRemove }) {
+  const [editing, setEditing] = useState(false);
+  const [end, setEnd] = useState("");
+  const [chip, chipClass] = STATE_CHIP[a.state] || ["", ""];
+  const startEdit = () => { setEnd(a.endsAt && a.state !== "ended" ? toLocalInput(new Date(a.endsAt)) : plusHours(24)); setEditing(true); };
+  const save = async () => { if (await onChange(a.id, end ? { endsAt: toIso(end) } : { noEnd: true })) setEditing(false); };
+  return (
+    <div className="adm-row ann-row">
+      <span className={`iss-chip ${a.state === "active" && a.level === "warning" ? "looking" : chipClass}`}>{a.state === "active" && a.level === "warning" ? "Live · warning" : chip}</span>
+      <div className="adm-who">
+        <div className="adm-name act-wrap">{a.message}</div>
+        <div className="adm-code">
+          {a.by ? `${a.by} · ` : ""}
+          {a.state === "scheduled" ? `starts ${formatWhen(a.startsAt)}` : `shown ${timeAgo(a.startsAt || a.createdAt)}`}
+          {" · "}{a.endsAt ? `${a.state === "ended" ? "ended" : "ends"} ${formatWhen(a.endsAt)}` : "no end time"}
+          {a.state !== "scheduled" && a.seenCount > 0 ? ` · seen by ${a.seenCount}` : ""}
+        </div>
+        {editing && (
+          <div className="ann-edit">
+            <label className="iss-label">New end time
+              <input className="iss-input" type="datetime-local" value={end} min={plusHours(0)} onChange={(e) => setEnd(e.target.value)} />
+            </label>
+            <QuickEnds onPick={setEnd} />
+            <div className="ann-edit-btns">
+              <button type="button" className="primary" disabled={busy} onClick={save}>Save</button>
+              <button type="button" className="secondary" onClick={() => setEditing(false)}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </div>
+      {!editing && (
+        <div className="ann-actions">
+          <button type="button" className="secondary" disabled={busy} onClick={startEdit}>{a.state === "ended" ? "Show again" : "Change end"}</button>
+          {a.state !== "ended" && <button type="button" className="secondary" disabled={busy} onClick={() => onChange(a.id, { endNow: true }, "End this announcement now?")}>End now</button>}
+          <button type="button" className="adm-remove" onClick={() => onRemove(a.id)} title="Remove" aria-label="Remove announcement"><IconTrash size={14} /></button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function AnnouncementsTab({ apiBase }) {
   const [items, setItems] = useState(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [level, setLevel] = useState("info");
-  const [dur, setDur] = useState(1);
+  const [startNow, setStartNow] = useState(true);
+  const [startsAt, setStartsAt] = useState("");
+  const [endsAt, setEndsAt] = useState(plusHours(24));
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -229,50 +335,64 @@ function AnnouncementsTab({ apiBase }) {
   const publish = async (e) => {
     e.preventDefault();
     if (busy || !message.trim()) return;
-    setBusy(true);
+    if (!startNow && !startsAt) { setError("Choose when it should start, or pick “Right now”."); return; }
+    setBusy(true); setError("");
     try {
-      await api(apiBase, "POST", "/api/admin/announcements", { message: message.trim(), level, hours: DURATIONS[dur].hours });
+      await api(apiBase, "POST", "/api/admin/announcements", {
+        message: message.trim(), level,
+        startsAt: startNow ? null : toIso(startsAt),
+        endsAt: endsAt ? toIso(endsAt) : null,
+      });
       setMessage(""); await load();
     } catch (err) { setError(networkText(err)); } finally { setBusy(false); }
   };
+  const change = async (id, body, confirmText) => {
+    if (confirmText && !window.confirm(confirmText)) return false;
+    setBusy(true); setError("");
+    try { await api(apiBase, "PATCH", `/api/admin/announcements/${id}`, body); await load(); return true; }
+    catch (err) { setError(networkText(err)); return false; } finally { setBusy(false); }
+  };
   const remove = async (id) => {
-    if (!window.confirm("Remove this announcement for everybody?")) return;
+    if (!window.confirm("Remove this announcement for everybody? It also disappears from their bell.")) return;
     try { await api(apiBase, "DELETE", `/api/admin/announcements/${id}`); await load(); } catch (err) { setError(networkText(err)); }
   };
 
   return (
     <>
-      <p className="iss-sub adm-intro">A message every user sees at the top of the console - for example "Server restarts at 6 pm". Users can close it.</p>
-      <form className="adm-add ann-form" onSubmit={publish}>
+      <p className="iss-sub adm-intro">
+        A message for every user. It reaches their bell, shows once as a popup after login, and stays on the Contact admin page until it ends.
+        Warnings are also shown as a banner at the top.
+      </p>
+      <form className="ann-new" onSubmit={publish}>
         <label className="iss-label ann-msg">Message
-          <input className="iss-input" value={message} maxLength={300} placeholder="e.g. The server restarts today at 6 pm" onChange={(e) => setMessage(e.target.value)} />
+          <input className="iss-input" value={message} maxLength={300} placeholder="e.g. Server build tomorrow at 10 am" onChange={(e) => setMessage(e.target.value)} />
         </label>
-        <label className="iss-label">Type
-          <select className="iss-input" value={level} onChange={(e) => setLevel(e.target.value)}>
-            <option value="info">Information</option><option value="warning">Warning</option>
-          </select>
-        </label>
-        <label className="iss-label">Show for
-          <select className="iss-input" value={dur} onChange={(e) => setDur(Number(e.target.value))}>
-            {DURATIONS.map((d, i) => <option key={d.label} value={i}>{d.label}</option>)}
-          </select>
-        </label>
-        <button type="submit" className="primary adm-add-btn" disabled={busy || !message.trim()}><IconPlus size={14} /> Publish</button>
+        <div className="ann-new-grid">
+          <label className="iss-label">Type
+            <select className="iss-input" value={level} onChange={(e) => setLevel(e.target.value)}>
+              <option value="info">Information</option><option value="warning">Warning (also a banner)</option>
+            </select>
+          </label>
+          <div className="iss-label">Show from
+            <div className="ann-from">
+              <label className="ann-radio"><input type="radio" checked={startNow} onChange={() => setStartNow(true)} /> Right now</label>
+              <label className="ann-radio"><input type="radio" checked={!startNow} onChange={() => { setStartNow(false); if (!startsAt) setStartsAt(plusHours(1)); }} /> Later</label>
+            </div>
+            {!startNow && <input className="iss-input" type="datetime-local" value={startsAt} min={plusHours(0)} onChange={(e) => setStartsAt(e.target.value)} />}
+          </div>
+          <div className="iss-label">Ends
+            <input className="iss-input" type="datetime-local" value={endsAt} min={plusHours(0)} onChange={(e) => setEndsAt(e.target.value)} />
+            <span className="ann-hint">{endsAt ? "Empty it, or press “No end”, to keep it until you end it." : "No end time - it stays until you end it."}</span>
+          </div>
+        </div>
+        <QuickEnds onPick={setEndsAt} />
+        <div><button type="submit" className="primary adm-add-btn" disabled={busy || !message.trim()}><IconPlus size={14} /> {startNow ? "Publish" : "Schedule"}</button></div>
       </form>
       {error && <div className="iss-error" role="alert">{error}</div>}
       <div className="adm-list">
         {items === null && !error && <div className="iss-muted adm-pad">Loading…</div>}
         {items && items.length === 0 && <div className="iss-muted adm-pad">No announcements yet.</div>}
-        {(items || []).map((a) => (
-          <div className="adm-row" key={a.id}>
-            <span className={`iss-chip ${a.active ? (a.level === "warning" ? "looking" : "fixed") : ""}`}>{a.active ? (a.level === "warning" ? "Warning" : "Info") : "Expired"}</span>
-            <div className="adm-who">
-              <div className="adm-name">{a.message}</div>
-              <div className="adm-code">{a.by ? `${a.by} · ` : ""}{timeAgo(a.createdAt)}{a.expiresAt && a.active ? " · ends soon" : ""}</div>
-            </div>
-            <button type="button" className="adm-remove" onClick={() => remove(a.id)} title="Remove" aria-label="Remove announcement"><IconTrash size={14} /></button>
-          </div>
-        ))}
+        {(items || []).map((a) => <AnnRow key={a.id} a={a} busy={busy} onChange={change} onRemove={remove} />)}
       </div>
     </>
   );
@@ -407,11 +527,11 @@ function AdminsTab({ apiBase, me }) {
 
 /* ───────────── the page ───────────── */
 export default function AdminPage({ apiBase, me, isAdmin, focus, onOpenIssue }) {
-  const [tab, setTab] = useState(isAdmin ? "live" : "contact");
+  const [tab, setTab] = useState(isAdmin ? "activity" : "contact");
   const [popup, setPopup] = useState(false);
   const [unread, setUnread] = useState(0);
 
-  useEffect(() => { if (isAdmin) setTab((t) => (t === "contact" ? "live" : t)); }, [isAdmin]);
+  useEffect(() => { if (isAdmin) setTab((t) => (t === "contact" ? "activity" : t)); }, [isAdmin]);
   useEffect(() => {                         // opened from a bell notification
     if (!focus) return;
     if (focus.tab) setTab(isAdmin && focus.tab === "contact" ? "inbox" : focus.tab);
@@ -427,7 +547,7 @@ export default function AdminPage({ apiBase, me, isAdmin, focus, onOpenIssue }) 
   }, [apiBase, isAdmin]);
 
   const tabs = isAdmin
-    ? [["live", "Live runs"], ["inbox", "Inbox"], ["announce", "Announcements"], ["work", "My work"], ["admins", "Admins"]]
+    ? [["activity", "Activity"], ["inbox", "Inbox"], ["announce", "Announcements"], ["work", "My work"], ["admins", "Admins"]]
     : [["contact", "Contact admin"], ["work", "My work"]];
   const active = tabs.some(([id]) => id === tab) ? tab : tabs[0][0];
 
@@ -443,7 +563,7 @@ export default function AdminPage({ apiBase, me, isAdmin, focus, onOpenIssue }) 
       </div>
 
       {active === "contact" && <ContactTab apiBase={apiBase} onContact={() => setPopup(true)} />}
-      {active === "live" && <LiveTab apiBase={apiBase} />}
+      {active === "activity" && <ActivityTab apiBase={apiBase} />}
       {active === "inbox" && <InboxTab apiBase={apiBase} focusThread={focus?.thread} onUnread={setUnread} />}
       {active === "announce" && <AnnouncementsTab apiBase={apiBase} />}
       {active === "work" && <WorkTab apiBase={apiBase} onOpenIssue={onOpenIssue} />}

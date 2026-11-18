@@ -3,6 +3,7 @@ import { errorText, networkText } from "./ScreenChat";
 import { timeAgo } from "./tracking";
 
 // Contact admin: one private conversation between a user and the admins. Backend: /api/support/...
+// While a chat is open its messages count as seen: the server clears the matching bell notifications.
 //   mode "user"  - my own conversation (I write to the admins)
 //   mode "admin" - one user's conversation, opened from the Inbox (I reply)
 const POLL_MS = 5000;
@@ -16,13 +17,20 @@ export function ChatBox({ apiBase, mode, threadKey, onChanged }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const endRef = useRef(null);
+  const lastCount = useRef(-1);
 
   const load = useCallback(async () => {
     try {
       const res = await fetch(base);
       if (!res.ok) throw new Error(await errorText(res));
-      setMessages((await res.json()).messages || []);
+      const list = (await res.json()).messages || [];
+      setMessages(list);
       setError("");
+      // Opening the chat marks its bell notifications as seen on the server - tell the bell so the number drops at once.
+      if (list.length !== lastCount.current) {
+        lastCount.current = list.length;
+        window.dispatchEvent(new Event("qc-notif-refresh"));
+      }
     } catch (e) {
       setError(networkText(e));
     }
@@ -30,6 +38,7 @@ export function ChatBox({ apiBase, mode, threadKey, onChanged }) {
 
   useEffect(() => {
     setMessages(null);
+    lastCount.current = -1;
     load();
     const t = setInterval(() => { if (!document.hidden) load(); }, POLL_MS);
     return () => clearInterval(t);

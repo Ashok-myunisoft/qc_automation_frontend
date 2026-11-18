@@ -1,0 +1,46 @@
+/* Announcements, the Activity tab and the bell additions. Imported by AdminPage, AnnouncementBanner and NotificationBell. */
+
+/* ── bell: announcements ── */
+.bell-ann-label { display: block; font-size: 11px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--brand-dark, var(--brand)); margin-bottom: 2px; }
+.bell-clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.bell-item.expired .bell-msg { text-decoration: none; }
+.bell-item:not(.unread) .bell-ann-label { color: var(--text-muted); }
+.bell-item:not(.unread) .bell-msg { color: var(--text-secondary); font-weight: 400; }
+
+/* ── small cards in the top-right corner, under the bell, after login (never block the screen) ── */
+.ann-toasts { position: fixed; top: 72px; right: 24px; z-index: 50; width: 340px; max-width: calc(100vw - 32px); display: flex; flex-direction: column; gap: 10px; }
+.ann-toast { padding: 12px 14px; border-radius: var(--radius); border: 1px solid var(--border); border-left: 4px solid var(--brand); background: var(--surface-1); box-shadow: 0 8px 24px rgba(0, 0, 0, .18); }
+.ann-toast.warn { border-left-color: var(--text-warning, #b45309); background: var(--bg-warning); }
+.ann-toast-label { font-size: 11px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--text-muted); }
+.ann-toast-msg { margin-top: 3px; font-size: 13.5px; font-weight: 600; line-height: 1.4; color: var(--text-primary); overflow-wrap: anywhere; }
+.ann-toast.warn .ann-toast-msg { color: var(--text-warning, inherit); }
+.ann-toast-meta { margin-top: 4px; font-size: 12px; color: var(--text-muted); }
+.ann-toast-foot { display: flex; justify-content: flex-end; margin-top: 8px; }
+.ann-toast-foot button, .ann-toast-more button { height: 28px; padding: 0 12px; font-size: 12.5px; }
+.ann-toast-more { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-radius: var(--radius); background: var(--surface-1); border: 1px solid var(--border); font-size: 12.5px; color: var(--text-secondary); box-shadow: 0 8px 24px rgba(0, 0, 0, .12); }
+@media (max-width: 600px) { .ann-toasts { right: 16px; } }
+
+/* ── Activity tab ── */
+.act-wrap { white-space: normal; overflow-wrap: anywhere; }
+.act-status { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-1); font-size: 14px; }
+.act-status .act-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--text-muted); flex: none; }
+.act-status.ok { background: var(--bg-success); border-color: var(--border-success, var(--border)); color: var(--text-success); }
+.act-status.ok .act-dot { background: var(--text-success, #15803d); }
+.act-status.warn { background: var(--bg-warning); border-color: var(--border-warning, var(--border)); color: var(--text-warning); }
+.act-status.warn .act-dot { background: var(--text-warning, #b45309); }
+.act-clean { margin-left: auto; }
+
+/* ── announcements (admin) ── */
+.ann-new { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-1); }
+.ann-new .ann-msg { max-width: none; }
+.ann-new-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; align-items: start; }
+.ann-from { display: flex; gap: 14px; margin: 6px 0; font-weight: 400; }
+.ann-radio { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--text-primary); cursor: pointer; }
+.ann-hint { display: block; margin-top: 4px; font-size: 12px; font-weight: 400; color: var(--text-muted); }
+.ann-quick { display: flex; flex-wrap: wrap; gap: 6px; }
+.ann-quick button { height: 28px; padding: 0 10px; font-size: 12.5px; }
+.ann-row { align-items: flex-start; }
+.ann-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.ann-actions .secondary { height: 30px; padding: 0 10px; font-size: 12.5px; }
+.ann-edit { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; max-width: 340px; }
+.ann-edit-btns { display: flex; gap: 8px; }
