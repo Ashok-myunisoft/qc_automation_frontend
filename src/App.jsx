@@ -184,7 +184,7 @@ function FeatureFileView({ text, onOpenScenariosChange }) {
   return (
     <div className="feature-view">
       {header.trim() && <pre className="feature-header">{header.trim()}</pre>}
-      {scenarios.length > 3 && (
+      {scenarios.length > 0 && (
         <div className="scn-filter">
           <div className="scn-filter-row">
             <input type="search" className="scn-search" value={query} onChange={(e) => setQuery(e.target.value)}
